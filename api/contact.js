@@ -333,12 +333,14 @@ function tgClient(user) {
 // Întoarce { data } sau { errors: [câmpuri greșite] }. Citește doar câmpurile formularului: name, tg_user_id, created_by se ignoră.
 function validateTg(body) {
   const data = {
+    type: str(body.type),
     service: str(body.service),
     phone: cleanText(body.phone).replace(/[\n\r\t]/g, ' '),
     message: cleanText(body.message),
     lang: ['ro', 'ru', 'en'].includes(body.lang) ? body.lang : 'ro',
   };
   const errors = [];
+  if (!Object.prototype.hasOwnProperty.call(TYPES, data.type)) errors.push('type');
   if (!Object.prototype.hasOwnProperty.call(SERVICES, data.service)) errors.push('service');
   if (data.phone.length > TG_PHONE_MAX || viz.normPhone(data.phone).length < 6) errors.push('phone');
   if (data.message.length > TG_MESSAGE_MAX) errors.push('message');
@@ -354,7 +356,7 @@ async function appendToNew(client, data, now) {
   const [open] = await rest(`requests?select=id,phone,message&tg_user_id=eq.${client.id}&status=eq.noua&order=created_at.desc&limit=1`);
   if (!open) return null;
   const otherPhone = viz.normPhone(open.phone) !== viz.normPhone(data.phone);
-  const head = `[${when(now)}] ${SERVICES[data.service]}${otherPhone ? ` · Telefon: ${data.phone}` : ''}`;
+  const head = `[${when(now)}] ${TYPES[data.type]} · ${SERVICES[data.service]}${otherPhone ? ` · Telefon: ${data.phone}` : ''}`;
   const message = [open.message, [head, data.message].filter(Boolean).join('\n')].filter(Boolean).join('\n\n');
   // Filtrul pe etapă: dacă echipa tocmai a mutat cardul, nu scriem peste el, ci se creează o cerere nouă
   const [saved] = await rest(`requests?id=eq.${open.id}&status=eq.noua`, { method: 'PATCH', body: { message }, prefer: 'return=representation' });
@@ -392,7 +394,7 @@ async function tgRequest(req, res) {
         method: 'POST',
         prefer: 'return=representation',
         body: {
-          name: client.name, phone: data.phone, email: '', type: '', service: data.service, message: data.message, lang: data.lang,
+          name: client.name, phone: data.phone, email: '', type: data.type, service: data.service, message: data.message, lang: data.lang,
           status: 'noua', source: 'telegram', channel: '', tg_user_id: client.id, created_by: client.actor, status_actor: client.actor,
         },
       });

@@ -1,6 +1,6 @@
 # Mini App Telegram pentru clienți: cerere care intră direct în CRM
 
-> **Stare: confirmată de utilizator pe 2026-11-02 și implementată.**
+> **Stare: confirmată de utilizator pe 2026-11-02 și implementată.** Adăugat ulterior, la cererea utilizatorului: tipul proiectului (obligatoriu, listă `TYPES`), deasupra serviciilor.
 
 ## Pe scurt
 Un bot Telegram nou, separat de @luxarch_crm_bot, deschide o pagină cu o singură cerere. Clientul alege un serviciu, dă telefonul, poate scrie un mesaj, bifează acordul și trimite. Cererea apare în CRM în etapa „Nouă”, cu sursa „Telegram” și cu numele luat din Telegram, iar proprietarul primește anunț.

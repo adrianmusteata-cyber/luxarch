@@ -55,6 +55,7 @@ function tgRequestRows(d, confirmed) {
     ['Nume', esc(d.name)],
     ...(d.username ? [['Telegram', '@' + esc(d.username)]] : []),
     ['Telefon', `${esc(d.phone)} ${confirmed ? '(confirmat de Telegram)' : '(scris de client)'}`],
+    ['Tip proiect', TYPES[d.type] || esc(d.type || '—')],
     ['Servicii', SERVICES[d.service] || esc(d.service)],
     ['Mesaj', d.message ? esc(d.message) : '—'],
   ];

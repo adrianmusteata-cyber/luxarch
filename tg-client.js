@@ -1,6 +1,6 @@
 /* ==========================================================
    LUXARCH — Mini App-ul clienților (botul de clienți, nu cel al echipei).
-   Un singur ecran: serviciul, telefonul, mesajul, acordul. Trimite la /api/contact?action=tg-request.
+   Un singur ecran: tipul proiectului, serviciul, telefonul, mesajul, acordul. Trimite la /api/contact?action=tg-request.
    Numele și ID-ul le ia serverul din initData verificat; aici numele e doar afișat.
    ========================================================== */
 (function () {
@@ -14,34 +14,38 @@
   // Textele serviciilor: RO stă aici, RU și EN vin din i18n.js (f.s1–f.s6), aceleași ca în formularul de pe site
   const SERVICES = [['arh_rez', 1], ['arh', 2], ['rez', 3], ['design', 5], ['management', 6], ['nu_stiu', 4]];
   const RO_SERVICES = { 1: 'Arhitectură + Rezistență', 2: 'Doar arhitectură', 3: 'Doar rezistență', 4: 'Nu știu încă', 5: 'Design interior', 6: 'Management de proiect' };
+  // La fel tipurile de proiect: RU și EN din i18n.js (f.t1–f.t6)
+  const TYPES = [['casa', 1], ['ansamblu', 2], ['birouri', 3], ['hala', 4], ['expertiza', 5], ['altceva', 6]];
+  const RO_TYPES = { 1: 'Casă unifamilială', 2: 'Ansamblu rezidențial', 3: 'Clădire de birouri / comercială', 4: 'Hală / industrial', 5: 'Expertiză / consolidare', 6: 'Altceva' };
+  const FIELDS = ['type', 'service', 'phone', 'message', 'consent'];
 
   const T = {
     ro: {
-      title: 'Trimite o cerere', from: 'Trimiți ca', service: 'Ce serviciu te interesează?', contactBtn: 'Trimite numărul meu',
+      title: 'Trimite o cerere', from: 'Trimiți ca', type: 'Ce tip de proiect ai?', service: 'Ce serviciu te interesează?', contactBtn: 'Trimite numărul meu',
       phone: 'Telefon', phoneHint: 'Scrie numărul aici', message: 'Mesaj (opțional)', consent: 'Sunt de acord cu', policy: 'politica de confidențialitate',
       send: 'Trimite', sending: 'Se trimite…', whatsapp: 'Scrie-ne pe WhatsApp', close: 'Închide', doneTitle: 'Cerere trimisă',
       thanks: 'Mulțumim, {name}! Am primit cererea și te contactăm în curând.',
-      e_service: 'Alege un serviciu.', e_phone: 'Scrie un număr de telefon valid (cel puțin 6 cifre).', e_message: 'Mesajul e prea lung (maximum 3000 de caractere).', e_consent: 'Bifează acordul ca să poți trimite.',
+      e_type: 'Alege tipul proiectului.', e_service: 'Alege un serviciu.', e_phone: 'Scrie un număr de telefon valid (cel puțin 6 cifre).', e_message: 'Mesajul e prea lung (maximum 3000 de caractere).', e_consent: 'Bifează acordul ca să poți trimite.',
       off: 'Momentan nu putem primi cereri aici.', bad: 'Închide aplicația și deschide-o din nou.', expired: 'Sesiunea a expirat. Închide aplicația și deschide-o din nou.',
       rate: 'Ai trimis mai multe cereri. Încearcă peste o oră sau scrie-ne pe WhatsApp.', fail: 'Cererea nu s-a putut trimite. Încearcă din nou sau scrie-ne pe WhatsApp.', net: 'Verifică internetul și încearcă din nou.', invalid: 'Verifică câmpurile marcate.',
       noTgTitle: 'Deschide în Telegram', noTgText: 'Această pagină funcționează doar în aplicația Telegram.', noTgBtn: 'Deschide în Telegram',
     },
     ru: {
-      title: 'Отправить заявку', from: 'Отправляете как', service: 'Какая услуга вас интересует?', contactBtn: 'Отправить мой номер',
+      title: 'Отправить заявку', from: 'Отправляете как', type: 'Какой у вас тип проекта?', service: 'Какая услуга вас интересует?', contactBtn: 'Отправить мой номер',
       phone: 'Телефон', phoneHint: 'Напишите номер здесь', message: 'Сообщение (необязательно)', consent: 'Я соглашаюсь с', policy: 'политикой конфиденциальности',
       send: 'Отправить', sending: 'Отправляем…', whatsapp: 'Написать в WhatsApp', close: 'Закрыть', doneTitle: 'Заявка отправлена',
       thanks: 'Спасибо, {name}! Мы получили заявку и скоро свяжемся с вами.',
-      e_service: 'Выберите услугу.', e_phone: 'Укажите правильный номер телефона (не менее 6 цифр).', e_message: 'Сообщение слишком длинное (максимум 3000 символов).', e_consent: 'Отметьте согласие, чтобы отправить заявку.',
+      e_type: 'Выберите тип проекта.', e_service: 'Выберите услугу.', e_phone: 'Укажите правильный номер телефона (не менее 6 цифр).', e_message: 'Сообщение слишком длинное (максимум 3000 символов).', e_consent: 'Отметьте согласие, чтобы отправить заявку.',
       off: 'Сейчас мы не можем принимать заявки здесь.', bad: 'Закройте приложение и откройте его снова.', expired: 'Сессия истекла. Закройте приложение и откройте его снова.',
       rate: 'Вы отправили несколько заявок. Попробуйте через час или напишите нам в WhatsApp.', fail: 'Не удалось отправить заявку. Попробуйте снова или напишите нам в WhatsApp.', net: 'Проверьте интернет и попробуйте снова.', invalid: 'Проверьте отмеченные поля.',
       noTgTitle: 'Откройте в Telegram', noTgText: 'Эта страница работает только в приложении Telegram.', noTgBtn: 'Открыть в Telegram',
     },
     en: {
-      title: 'Send a request', from: 'Sending as', service: 'Which service are you interested in?', contactBtn: 'Send my number',
+      title: 'Send a request', from: 'Sending as', type: 'What type of project do you have?', service: 'Which service are you interested in?', contactBtn: 'Send my number',
       phone: 'Phone', phoneHint: 'Type your number here', message: 'Message (optional)', consent: 'I agree to the', policy: 'privacy policy',
       send: 'Send', sending: 'Sending…', whatsapp: 'Message us on WhatsApp', close: 'Close', doneTitle: 'Request sent',
       thanks: 'Thank you, {name}! We received your request and will contact you soon.',
-      e_service: 'Choose a service.', e_phone: 'Enter a valid phone number (at least 6 digits).', e_message: 'The message is too long (3000 characters at most).', e_consent: 'Tick the box to send your request.',
+      e_type: 'Choose the project type.', e_service: 'Choose a service.', e_phone: 'Enter a valid phone number (at least 6 digits).', e_message: 'The message is too long (3000 characters at most).', e_consent: 'Tick the box to send your request.',
       off: 'We cannot receive requests here at the moment.', bad: 'Close the app and open it again.', expired: 'The session has expired. Close the app and open it again.',
       rate: 'You have sent several requests. Try again in an hour or message us on WhatsApp.', fail: 'The request could not be sent. Try again or message us on WhatsApp.', net: 'Check your connection and try again.', invalid: 'Check the highlighted fields.',
       noTgTitle: 'Open in Telegram', noTgText: 'This page only works in the Telegram app.', noTgBtn: 'Open in Telegram',
@@ -64,6 +68,7 @@
     if (d.startsWith('373')) d = d.slice(3);
     return d.replace(/^0+/, '');
   };
+  const typeText = (lang, n) => (lang !== 'ro' && window.LX_I18N && window.LX_I18N[lang] && window.LX_I18N[lang][`f.t${n}`]) || RO_TYPES[n];
   const serviceText = (lang, n) => (lang !== 'ro' && window.LX_I18N && window.LX_I18N[lang] && window.LX_I18N[lang][`f.s${n}`]) || RO_SERVICES[n];
 
   // Telegram mai vechi nu are toate metodele: ce lipsește se sare, aplicația merge mai departe
@@ -81,9 +86,10 @@
     document.documentElement.lang = state.lang;
     document.querySelectorAll('[data-t]').forEach(el => { el.textContent = t[el.dataset.t]; });
     document.querySelectorAll('#lang [data-lang]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lang === state.lang)));
+    TYPES.forEach(([key, n]) => { $(`t-${key}`).textContent = typeText(state.lang, n); });
     SERVICES.forEach(([key, n]) => { $(`s-${key}`).textContent = serviceText(state.lang, n); });
     if (state.sending) $('send').textContent = t.sending;
-    ['service', 'phone', 'message', 'consent'].forEach(f => {
+    FIELDS.forEach(f => {
       const bad = state.errors.includes(f);
       $(`f-${f}`).classList.toggle('bad', bad);
       $(`e-${f}`).hidden = !bad;
@@ -99,6 +105,8 @@
   }
 
   function buildServices() {
+    $('types').innerHTML = TYPES.map(([key]) =>
+      `<label class="service"><input type="radio" name="ptype" value="${key}"><span id="t-${key}"></span></label>`).join('');
     $('services').innerHTML = SERVICES.map(([key]) =>
       `<label class="service"><input type="radio" name="service" value="${key}"><span id="s-${key}"></span></label>`).join('');
   }
@@ -145,7 +153,9 @@
 
   function values() {
     const checked = document.querySelector('input[name="service"]:checked');
+    const ptype = document.querySelector('input[name="ptype"]:checked');
     return {
+      type: ptype ? ptype.value : '',
       service: checked ? checked.value : '',
       phone: $('phone').value.trim(),
       message: $('message').value.trim(),
@@ -155,6 +165,7 @@
 
   function localErrors(v) {
     const errors = [];
+    if (!v.type) errors.push('type');
     if (!v.service) errors.push('service');
     if (v.phone.length > 30 || normPhone(v.phone).length < 6) errors.push('phone');
     if (v.message.length > 3000) errors.push('message');
@@ -163,7 +174,7 @@
   }
 
   function focusFirstError() {
-    const first = ['service', 'phone', 'message', 'consent'].find(f => state.errors.includes(f));
+    const first = FIELDS.find(f => state.errors.includes(f));
     if (first) $(`f-${first}`).scrollIntoView({ block: 'center' });
   }
 
@@ -251,6 +262,7 @@
     if (canContact) $('contactBtn').addEventListener('click', askContact);
 
     $('form').addEventListener('submit', submit);
+    $('types').addEventListener('change', () => clearError('type'));
     $('services').addEventListener('change', () => clearError('service'));
     $('phone').addEventListener('input', () => { $('phoneHint').hidden = true; clearError('phone'); });
     $('message').addEventListener('input', () => clearError('message'));
