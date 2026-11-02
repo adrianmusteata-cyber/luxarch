@@ -9,13 +9,17 @@
         website, startedAt, lang } → { token, uploads: [{ page, url }] } — cererea se salvează în CRM înainte de limite;
         o limită atinsă → 429 { error: limit_ip | limit_phone | limit_site, saved: true }
    POST /api/contact?action=viz-generate { token } → { url } (link de citire valabil o oră)
+   Mini App-ul clienților (bot separat de cel al echipei, vezi docs/specs/2026-11-02-mini-app-clienti.md):
+   POST /api/contact?action=tg-request, antet X-Telegram-Init-Data, { service, phone, contact_raw?, message?, lang, consent }
+        → { ok, appended } — cerere în etapa „Nouă” sau completare la cererea deja aflată în „Nouă”
    Fără action, ruta e formularul de contact de mai jos, neschimbat.
    ========================================================== */
 const { TYPES, SERVICES } = require('./_lib/labels');
 const { rest } = require('./_lib/db');
 const { ipKey, clientIp, jsonBody, allow } = require('./_lib/http');
 const { countHits, addHit } = require('./_lib/rate');
-const { telegramText, vizText, sendTelegram, sendOwnerEmail, emailConfigured, notifySafely } = require('./_lib/notify');
+const { telegramText, vizText, tgRequestText, when, sendTelegram, sendOwnerEmail, sendTgRequestEmail, emailConfigured, notifySafely } = require('./_lib/notify');
+const { verifyInitData, verifyContact, clientToken, tgName } = require('./_lib/auth');
 const viz = require('./_lib/imagegen');
 const turnstile = require('./_lib/turnstile');
 const store = require('./_lib/storage');
@@ -60,6 +64,8 @@ function isSpam(body, now = Date.now()) {
 async function handler(req, res) {
   // Vizualizare proiect: doar cu ?action=; fără el, formularul de contact merge exact ca înainte
   const action = String((req.query && req.query.action) || '');
+  // Cererea din Telegram nu depinde de vizualizări (vizHandler respinge acțiunile necunoscute)
+  if (action === 'tg-request') return tgRequest(req, res);
   if (action) return vizHandler(action, req, res);
   if (!allow(req, res, ['POST'])) return;
   const body = jsonBody(req);
@@ -306,7 +312,113 @@ async function vizHandler(action, req, res) {
   }
 }
 
+/* ==========================================================
+   Mini App-ul clienților: o cerere din Telegram
+   ========================================================== */
+const TG_PHONE_MAX = 30;
+const TG_MESSAGE_MAX = 3000;
+const TG_NAME_MAX = 100;
+
+// Postgres refuză NUL și jumătățile de emoji (rămase după scurtare): cererea ar pleca degeaba pe calea de avarie
+const wellFormed = s => s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+const cleanText = v => wellFormed(str(v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')).trim();
+
+// Cine trimite: doar din initData verificat, niciodată din corpul cererii
+function tgClient(user) {
+  const { username, first_name, last_name } = tgName(user);
+  const name = wellFormed([first_name, last_name].filter(Boolean).join(' ').slice(0, TG_NAME_MAX)).trim() || `Telegram ${user.id}`;
+  return { id: user.id, name, username, actor: username ? '@' + username : name };
+}
+
+// Întoarce { data } sau { errors: [câmpuri greșite] }. Citește doar câmpurile formularului: name, tg_user_id, created_by se ignoră.
+function validateTg(body) {
+  const data = {
+    service: str(body.service),
+    phone: cleanText(body.phone).replace(/[\n\r\t]/g, ' '),
+    message: cleanText(body.message),
+    lang: ['ro', 'ru', 'en'].includes(body.lang) ? body.lang : 'ro',
+  };
+  const errors = [];
+  if (!Object.prototype.hasOwnProperty.call(SERVICES, data.service)) errors.push('service');
+  if (data.phone.length > TG_PHONE_MAX || viz.normPhone(data.phone).length < 6) errors.push('phone');
+  if (data.message.length > TG_MESSAGE_MAX) errors.push('message');
+  if (body.consent !== true) errors.push('consent');
+  return errors.length ? { errors } : { data };
+}
+
+// Mesajele Supabase pot cita rândul refuzat, deci și telefonul: în jurnal rămâne doar eroarea
+const noRowData = m => String(m).replace(/Failing row contains[\s\S]*/, '(rând omis)');
+
+// Cererea deja aflată în „Nouă” primește textul nou; null dacă nu există sau a fost mutată între timp
+async function appendToNew(client, data, now) {
+  const [open] = await rest(`requests?select=id,phone,message&tg_user_id=eq.${client.id}&status=eq.noua&order=created_at.desc&limit=1`);
+  if (!open) return null;
+  const otherPhone = viz.normPhone(open.phone) !== viz.normPhone(data.phone);
+  const head = `[${when(now)}] ${SERVICES[data.service]}${otherPhone ? ` · Telefon: ${data.phone}` : ''}`;
+  const message = [open.message, [head, data.message].filter(Boolean).join('\n')].filter(Boolean).join('\n\n');
+  // Filtrul pe etapă: dacă echipa tocmai a mutat cardul, nu scriem peste el, ci se creează o cerere nouă
+  const [saved] = await rest(`requests?id=eq.${open.id}&status=eq.noua`, { method: 'PATCH', body: { message }, prefer: 'return=representation' });
+  return saved || null;
+}
+
+async function tgRequest(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (!allow(req, res, ['POST'])) return;
+  const token = clientToken();
+  if (!token) return res.status(503).json({ ok: false, error: 'tg_client_off' });
+  const { user, error } = verifyInitData(String(req.headers['x-telegram-init-data'] || ''), token);
+  if (error) return res.status(401).json({ ok: false, error });
+  const body = jsonBody(req);
+  if (!body) return res.status(400).json({ ok: false, error: 'invalid', fields: [] });
+  const { data, errors } = validateTg(body);
+  if (errors) return res.status(400).json({ ok: false, error: 'invalid', fields: errors });
+
+  const client = tgClient(user);
+  // responseUnsafe nu ajunge aici: dovada e doar textul brut, cu semnătura lui. Orice nepotrivire = scris de mână.
+  const confirmed = typeof body.contact_raw === 'string' && verifyContact(body.contact_raw, token, user.id, data.phone);
+  if (confirmed) data.phone = '+' + data.phone.replace(/\D/g, '');
+  const now = new Date();
+  const notice = { name: client.name, username: client.username, ...data };
+
+  let saved = null, appended = false;
+  try {
+    const key = `tg-request:${client.id}`;
+    if (await countHits(key, 36e5) >= MAX_PER_HOUR) return res.status(429).json({ ok: false, error: 'rate' });
+    await addHit(key);
+    saved = await appendToNew(client, data, now);
+    appended = !!saved;
+    if (!saved) {
+      [saved] = await rest('requests', {
+        method: 'POST',
+        prefer: 'return=representation',
+        body: {
+          name: client.name, phone: data.phone, email: '', type: '', service: data.service, message: data.message, lang: data.lang,
+          status: 'noua', source: 'telegram', channel: '', tg_user_id: client.id, created_by: client.actor, status_actor: client.actor,
+        },
+      });
+    }
+  } catch (e) {
+    // Baza nu răspunde sau migrarea lipsește: cererea pleacă pe Telegram, iar clientul vede confirmarea
+    console.error('Salvarea cererii din Telegram a eșuat:', noRowData(e.message));
+    try {
+      await sendTelegram(tgRequestText(notice, { confirmed, createdAt: now }) + '\n\n⚠️ <i>Cererea NU a fost salvată în panou (eroare la baza de date).</i>');
+      return res.status(200).json({ ok: true, appended: false });
+    } catch (e2) {
+      console.error('Trimiterea pe Telegram a eșuat:', e2.message);
+      return res.status(502).json({ ok: false, error: 'save' });
+    }
+  }
+
+  // Cererea e salvată: un anunț eșuat ajunge doar în jurnal, iar clientul nu află
+  const opts = { confirmed, appended, id: saved.id, createdAt: appended ? now : saved.created_at };
+  const jobs = [sendTelegram(tgRequestText(notice, opts))];
+  if (emailConfigured()) jobs.push(sendTgRequestEmail(notice, opts));
+  await notifySafely(jobs);
+  return res.status(200).json({ ok: true, appended });
+}
+
 module.exports = handler;
+module.exports.validateTg = validateTg;
 module.exports.validateViz = validateViz;
 module.exports.validate = validate;
 module.exports.isSpam = isSpam;

@@ -48,6 +48,31 @@ function vizText(d, line, createdAt = d.created_at || new Date()) {
   return lines.join('\n');
 }
 
+/* Cererea din Mini App-ul clienților. d = { name, username, phone, service, message, lang };
+   confirmed: numărul e dovedit de Telegram; appended: completare la cererea din „Nouă”; id: linkul spre fișă (lipsește dacă baza nu răspunde). */
+function tgRequestRows(d, confirmed) {
+  return [
+    ['Nume', esc(d.name)],
+    ...(d.username ? [['Telegram', '@' + esc(d.username)]] : []),
+    ['Telefon', `${esc(d.phone)} ${confirmed ? '(confirmat de Telegram)' : '(scris de client)'}`],
+    ['Servicii', SERVICES[d.service] || esc(d.service)],
+    ['Mesaj', d.message ? esc(d.message) : '—'],
+  ];
+}
+const tgRequestTitle = appended => (appended ? 'Completare la o cerere din Telegram' : 'Cerere nouă din Telegram');
+
+function tgRequestText(d, { confirmed = false, appended = false, id = null, createdAt = new Date() } = {}) {
+  const lines = [
+    `<b>${appended ? '✏️' : '🏠'} ${tgRequestTitle(appended)}</b>`,
+    '',
+    ...tgRequestRows(d, confirmed).map(([k, v]) => `<b>${k}:</b> ${v}`),
+    '',
+    `<i>Limba: ${String(d.lang).toUpperCase()} · ${when(createdAt)} (ora Chișinăului)</i>`,
+  ];
+  if (id) lines.push('', `<a href="${SITE}/admin?id=${id}">Deschide fișa clientului</a>`);
+  return lines.join('\n');
+}
+
 // Client adăugat manual din panou; din Mini App titlul spune și cine l-a adăugat
 function manualClientText(r) {
   const fromTg = r.source === 'telegram'
@@ -145,7 +170,31 @@ async function sendOwnerEmail(d, createdAt = new Date()) {
   if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
 }
 
+// Clientul din Telegram nu are email, deci mesajul nu are reply_to (Resend nu primește o adresă goală)
+async function sendTgRequestEmail(d, { confirmed = false, appended = false, id = null, createdAt = new Date() } = {}) {
+  const html = `
+    <h2 style="font-family:Georgia,serif;font-weight:400">${tgRequestTitle(appended)}</h2>
+    <table cellpadding="6" style="font-family:Arial,sans-serif;font-size:14px;border-collapse:collapse">
+      ${tgRequestRows(d, confirmed).map(([k, v]) => `<tr><td style="color:#5E534A;vertical-align:top"><b>${k}</b></td><td style="white-space:pre-wrap">${v}</td></tr>`).join('')}
+    </table>
+    <p style="font-family:Arial,sans-serif;font-size:13px;color:#5E534A">Limba: ${String(d.lang).toUpperCase()} · ${when(createdAt)} (ora Chișinăului)</p>
+    <p style="font-family:Arial,sans-serif"><a href="${SITE}/admin${id ? `?id=${id}` : ''}">Deschide în panoul de administrare</a></p>`;
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: process.env.MAIL_FROM,
+      to: [process.env.OWNER_EMAIL],
+      subject: `${tgRequestTitle(appended)}: ${d.name}`,
+      html,
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
+}
+
 module.exports = {
+  when, tgRequestText, sendTgRequestEmail,
   telegramText, sendTelegram, sendOwnerEmail, emailConfigured,
   manualClientText, vizText, paymentText, isPayment, sendPayment, notifySafely,
 };

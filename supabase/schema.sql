@@ -457,3 +457,10 @@ create index if not exists generations_request_idx on public.generations (reques
 
 -- Acces doar de pe server (cheia service_role), ca restul tabelelor
 alter table public.generations enable row level security;
+
+-- ==========================================================
+-- Mini App-ul clienților. Identic cu migrations/2026-11-02-tg-clienti.sql
+-- ==========================================================
+-- Mini App-ul clienților: ID-ul Telegram al celui care a trimis cererea, ca o cerere repetată să se adauge la cea din „Nouă”.
+alter table public.requests add column if not exists tg_user_id bigint;
+create index if not exists requests_tg_user_idx on public.requests (tg_user_id) where tg_user_id is not null;

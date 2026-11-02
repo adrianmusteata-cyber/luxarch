@@ -51,6 +51,11 @@ function isAuthed(req) {
 const TG_HEADER = 'x-telegram-init-data';
 const TG_MAX_AGE = 24 * 3600; // secunde: initData mai vechi de o zi nu mai e primit
 const appToken = (env = process.env) => String(env.TELEGRAM_APP_BOT_TOKEN || '').trim();
+// Tokenul botului de clienți. Gol dacă lipsește sau e identic cu al botului CRM: separarea de panou stă în tokenuri diferite
+const clientToken = (env = process.env) => {
+  const t = String(env.TELEGRAM_CLIENT_BOT_TOKEN || '').trim();
+  return t && t !== appToken(env) ? t : '';
+};
 
 // „111, 222,abc” → Set { '111', '222' }: spațiile și valorile nenumerice se ignoră
 const idList = v => new Set(String(v || '').split(',').map(s => s.trim()).filter(s => /^\d{1,20}$/.test(s)));
@@ -58,26 +63,53 @@ const idList = v => new Set(String(v || '').split(',').map(s => s.trim()).filter
 /* Verificarea după documentația Telegram WebApp:
    secret = HMAC_SHA256(cheie "WebAppData", tokenul botului);
    hash   = HMAC_SHA256(cheie secret, data_check_string), unde data_check_string = perechile cheie=valoare
-   (toate, fără hash), sortate după cheie și unite cu \n. Întoarce { user } sau { error: 'tg_bad' | 'tg_expired' }. */
-function verifyInitData(raw, token, now = Date.now()) {
-  if (typeof raw !== 'string' || !raw || raw.length > 8192) return { error: 'tg_bad' };
+   (toate, fără hash), sortate după cheie și unite cu \n. Întoarce parametrii fără hash sau null. */
+function signedParams(raw, token) {
+  if (typeof raw !== 'string' || !raw || raw.length > 8192) return null;
   const params = new URLSearchParams(raw);
   const hash = params.get('hash') || '';
-  if (!/^[0-9a-f]{64}$/i.test(hash)) return { error: 'tg_bad' };
+  if (!/^[0-9a-f]{64}$/i.test(hash)) return null;
   params.delete('hash');
   const check = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n');
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
   const expected = crypto.createHmac('sha256', secretKey).update(check).digest();
-  if (!crypto.timingSafeEqual(expected, Buffer.from(hash, 'hex'))) return { error: 'tg_bad' };
-  // Abia după semnătură: data și utilizatorul vin de la Telegram, nu de la cine a trimis cererea
+  return crypto.timingSafeEqual(expected, Buffer.from(hash, 'hex')) ? params : null;
+}
+
+// 'ok' | 'tg_bad' (auth_date lipsă) | 'tg_expired' (peste 24 de ore; 5 minute toleranță pentru ceas)
+function ageState(params, now) {
   const authDate = Number(params.get('auth_date'));
-  if (!Number.isInteger(authDate) || authDate <= 0) return { error: 'tg_bad' };
+  if (!Number.isInteger(authDate) || authDate <= 0) return 'tg_bad';
   const age = now / 1000 - authDate;
-  if (age > TG_MAX_AGE || age < -300) return { error: 'tg_expired' }; // 5 minute toleranță pentru ceas
+  return age > TG_MAX_AGE || age < -300 ? 'tg_expired' : 'ok';
+}
+
+// Întoarce { user } sau { error: 'tg_bad' | 'tg_expired' }
+function verifyInitData(raw, token, now = Date.now()) {
+  const params = signedParams(raw, token);
+  if (!params) return { error: 'tg_bad' };
+  // Abia după semnătură: data și utilizatorul vin de la Telegram, nu de la cine a trimis cererea
+  const state = ageState(params, now);
+  if (state !== 'ok') return { error: state };
   let user;
   try { user = JSON.parse(params.get('user') || ''); } catch (e) { return { error: 'tg_bad' }; }
   if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) return { error: 'tg_bad' };
   return { user };
+}
+
+/* Numărul trimis prin requestContact e „dovedit” doar dacă toate condițiile sunt îndeplinite; altfel e „scris de mână”.
+   Formatul răspunsului (contact=<JSON>&auth_date=...&hash=...) nu e descris în documentația oficială, și nici semnătura lui.
+   Încercăm formula de la initData: dacă Telegram semnează altfel, HMAC-ul nu se potrivește, iar rezultatul e mereu false,
+   deci niciodată o mențiune falsă. Un șir initData nu trece: nu are câmpul contact.
+   Întoarce true/false și nu scrie nimic în jurnal. */
+function verifyContact(raw, token, userId, phone, now = Date.now()) {
+  const params = signedParams(raw, token);
+  if (!params || ageState(params, now) !== 'ok') return false;
+  let contact;
+  try { contact = JSON.parse(params.get('contact') || ''); } catch (e) { return false; }
+  if (!contact || String(contact.user_id) !== String(userId)) return false;
+  const digits = String(contact.phone_number || '').replace(/\D/g, '');
+  return !!digits && digits === String(phone || '').replace(/\D/g, '');
 }
 
 // Rolul din initData: proprietar (chiar dacă e și în lista angajaților), angajat sau refuzat.
@@ -152,4 +184,4 @@ function asRole(req, res, real, staff) {
   return role;
 }
 
-module.exports = { checkPassword, setSession, clearSession, isAuthed, requireAdmin, verifyInitData, telegramRole, actorOf };
+module.exports = { checkPassword, setSession, clearSession, isAuthed, requireAdmin, verifyInitData, verifyContact, telegramRole, actorOf, clientToken, tgName };

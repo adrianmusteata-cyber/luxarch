@@ -34,7 +34,7 @@ const SOURCES = {
   carte_vizita: 'Carte de vizită',
   chestionar: 'Chestionar',
   document: 'Document',
-  telegram: 'Telegram', // client adăugat din Mini App Telegram (proprietar sau angajat)
+  telegram: 'Telegram', // cu canal: client adăugat de echipă din Mini App; fără canal: cerere trimisă de client din botul lui
   vizualizare: 'Site, vizualizare', // cererea lăsată din formularul „Vedeți-vă viitoarea casă” (schiță cu Gemini)
 };
 

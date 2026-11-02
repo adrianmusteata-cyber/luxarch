@@ -130,7 +130,7 @@ Cerințe verificabile, toate doar când panoul rulează în Telegram (`window.Te
 ### Mai târziu
 - Notificarea „client nou adăugat manual” și istoricul etapelor să arate **cine** a făcut acțiunea (numele din Telegram). Acum nu se știe dacă a fost proprietarul sau un angajat.
 - O listă de angajați administrată din panou, în locul variabilelor din Vercel, fără republicare.
-- Partea pentru clienți: cererea cu lista de servicii (sursa „Telegram”), contul clientului.
+- Contul clientului. Cererea clienților are acum specificația ei, cu bot separat: `docs/specs/2026-11-02-mini-app-clienti.md`.
 - Rezervarea pe ore și cardul de fidelitate: nu se potrivesc unui birou de proiectare.
 - Un link direct spre Mini App (`/newapp` la BotFather), ca s-o poată trimite cuiva.
 
@@ -151,8 +151,8 @@ Cerințe verificabile, toate doar când panoul rulează în Telegram (`window.Te
 - **Limita de 30 de recunoașteri pe oră** e comună pentru toți (proprietar și angajați). La depășire apare mesajul actual (429).
 
 ## Date și drepturi de acces
-- **Tabele noi și migrări: niciuna.** Sursele rămân cele existente: `carte_vizita`, `chestionar`, `manual`; avizele și chitanțele rămân cheltuieli.
-- **Date personale primite de la Telegram:** se folosesc doar `user.id` (pentru rol) și, eventual, numele în interfață. Nu se salvează nimic în baza de date.
+- **Tabele noi: niciuna. Migrări:** doar `2026-10-30-telegram-autor.sql`, adăugată ulterior (vezi „Pe scurt”). Sursele scanerului rămân cele existente: `carte_vizita`, `chestionar`, `manual`; avizele și chitanțele rămân cheltuieli.
+- **Date personale primite de la Telegram:** se folosesc `user.id` (pentru rol) și numele. Pentru clienții adăugați și pentru schimbările de etapă din Mini App se salvează autorul („@username” sau numele), în `created_by` și `status_actor`. ID-ul membrilor echipei nu se salvează în baza de date.
 - **Variabile noi în Vercel:**
   - `TELEGRAM_APP_BOT_TOKEN`: tokenul botului nou;
   - `TG_OWNER_IDS`: ID-uri numerice, separate prin virgulă;
@@ -199,7 +199,7 @@ Cerințe verificabile, toate doar când panoul rulează în Telegram (`window.Te
 - **Claude, Supabase, Storage:** neschimbate. Erorile lor apar ca acum.
 
 ## Ce nu intră în această sarcină
-- Orice parte pentru clienți (catalog, cerere, cont, rezervare, fidelitate).
+- Partea pentru clienți în botul CRM. Cererea clienților are un bot separat și specificația ei: `docs/specs/2026-11-02-mini-app-clienti.md`. Catalogul, contul, rezervarea și fidelitatea rămân în afara sarcinii.
 - Funcții Vercel noi, comasarea funcțiilor, upgrade la Vercel Pro.
 - Webhook pentru vreun bot și comenzi în chat (`/start` cu răspuns etc.).
 - Tabele noi, liste de angajați în bază, roluri mai fine decât `owner` și `staff`.

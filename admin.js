@@ -60,6 +60,9 @@
   const label = (map, k) => (k ? esc(map[k] || k) : '—');
   // Autorul din Mini App („@username” sau numele), salvat de server din initData verificat; gol = din browser
   const byTg = who => (who ? `${esc(who)} (Telegram)` : '');
+  // Cererea trimisă de client din botul lui: @username devine link spre Telegram doar dacă are forma corectă
+  const tgClientLink = who => (/^@[A-Za-z0-9_]{4,32}$/.test(who || '')
+    ? `<a href="https://t.me/${esc(who.slice(1))}" target="_blank" rel="noopener">${esc(who)}</a>` : esc(who));
 
   // Sume: „12 500”, „3 000,50” (spațiu nedespărțitor la mii, zecimale doar când există)
   const num = v => {
@@ -672,8 +675,9 @@
       $('#detail').innerHTML = `
         <article class="detail-card">
           <h1>${esc(r.name)}</h1>
-          <p class="muted">${srcTag(r)} Creat la ${esc(fmt(r.created_at))}${r.source === 'site' ? ` · ${({ en: 'Engleză', ru: 'Rusă' })[r.lang] || 'Română'}` : ''}</p>
-          ${r.created_by ? `<p class="muted detail-author">Adăugat de ${byTg(r.created_by)}</p>` : ''}
+          <p class="muted">${srcTag(r)} Creat la ${esc(fmt(r.created_at))}${r.source === 'site' || r.tg_user_id ? ` · ${({ en: 'Engleză', ru: 'Rusă' })[r.lang] || 'Română'}` : ''}</p>
+          ${r.tg_user_id ? `<p class="muted detail-author">Cerere de la client: ${tgClientLink(r.created_by)}</p>`
+            : r.created_by ? `<p class="muted detail-author">Adăugat de ${byTg(r.created_by)}</p>` : ''}
           <div class="detail-actions">
             ${phone ? `<a class="btn btn-sm" href="tel:${esc(phone)}">Sună</a>
             <a class="btn btn-sm btn-clay" href="https://wa.me/${esc(phone.replace('+', ''))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
