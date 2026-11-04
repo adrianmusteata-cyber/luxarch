@@ -20,7 +20,7 @@ if (-not $conn) { 'PORT_LIBER'; return }
 $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)"
 if ($p.CommandLine -notmatch 'vercel') { "ALT_PROCES: $($p.Name) $($p.CommandLine)"; return }
 $ids = @()
-while ($p -and $p.CommandLine -match 'vercel.*dev' -and $p.ProcessId -ne $PID) {
+while ($p -and $p.CommandLine -match '\b(vercel|vc)\b.*\bdev\b' -and $p.ProcessId -ne $PID) {
   $ids += $p.ProcessId
   $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"
 }
