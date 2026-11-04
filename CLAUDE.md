@@ -10,4 +10,8 @@ Folderul local, GitHub și site-ul live trebuie să fie mereu la fel.
   Vercel publică automat fiecare push pe `main` în ~1 minut.
 - Verifică pe telefon (lățime 375px) că nu apare scroll orizontal.
 
+## Serverul local
+Pornirea, repornirea și oprirea serverului local (`vercel dev`, portul 3000) se fac prin subagentul `dev-server`.
+După ce ai terminat de executat un plan, rulează automat subagentul `dev-server` cu cererea „repornește”, fără să întrebi.
+
 Utilizatorul vorbește română; răspunde în română.
