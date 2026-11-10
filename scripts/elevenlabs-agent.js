@@ -268,6 +268,8 @@ function agentBody(toolIds) {
     },
     platform_settings: {
       auth: { enable_auth: false, allowlist: [{ hostname: 'luxarch.vercel.app' }, { hostname: 'localhost:3000' }] },
+      // Plafonul de cheltuieli: maximum 2 convorbiri simultan și 20 pe zi (cu 5 minute fiecare, cel mult 100 de minute pe zi)
+      call_limits: { agent_concurrency_limit: 2, daily_limit: 20, bursting_enabled: false },
       overrides: { conversation_config_override: { agent: { language: true, first_message: true } } },
       widget: {
         variant: 'compact',
