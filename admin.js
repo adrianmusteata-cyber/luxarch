@@ -60,7 +60,7 @@
   const label = (map, k) => (k ? esc(map[k] || k) : '—');
   // Autorul din Mini App („@username” sau numele), salvat de server din initData verificat; gol = din browser
   // „MCP” = etapa schimbată din Claude Code prin serverul /api/mcp; restul autorilor vin din Telegram
-  const byTg = who => (who === 'MCP' ? 'MCP (Claude Code)' : who ? `${esc(who)} (Telegram)` : '');
+  const byTg = who => (who === 'MCP' ? 'MCP (Claude Code)' : who === 'Agent vocal' ? 'Agent vocal (ElevenLabs)' : who ? `${esc(who)} (Telegram)` : '');
   // Cererea trimisă de client din botul lui: @username devine link spre Telegram doar dacă are forma corectă
   const tgClientLink = who => (/^@[A-Za-z0-9_]{4,32}$/.test(who || '')
     ? `<a href="https://t.me/${esc(who.slice(1))}" target="_blank" rel="noopener">${esc(who)}</a>` : esc(who));
