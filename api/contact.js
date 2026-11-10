@@ -12,13 +12,18 @@
    Mini App-ul clienților (bot separat de cel al echipei, vezi docs/specs/2026-11-02-mini-app-clienti.md):
    POST /api/contact?action=tg-request, antet X-Telegram-Init-Data, { service, phone, contact_raw?, message?, lang, consent }
         → { ok, appended } — cerere în etapa „Nouă” sau completare la cererea deja aflată în „Nouă”
+   Agentul vocal ElevenLabs (unealta de server save_lead, vezi docs/specs/2026-11-10-agent-vocal.md):
+   POST /api/contact?action=voice-lead, antet X-Webhook-Secret = ELEVENLABS_WEBHOOK_SECRET,
+        { name, phone, summary, lang, service?, type?, consent: true } → { ok } sau { ok: false, error: invalid | rate | save, fields? };
+        cerere „Nouă” cu sursa „voce” + anunț „🎙 Voce” pe Telegram; 5/oră pe telefon, 30/zi pe site, dublura în 10 minute se ignoră
    Fără action, ruta e formularul de contact de mai jos, neschimbat.
    ========================================================== */
 const { TYPES, SERVICES } = require('./_lib/labels');
 const { rest } = require('./_lib/db');
 const { ipKey, clientIp, jsonBody, allow } = require('./_lib/http');
 const { countHits, addHit } = require('./_lib/rate');
-const { telegramText, vizText, tgRequestText, when, sendTelegram, sendOwnerEmail, sendTgRequestEmail, emailConfigured, notifySafely } = require('./_lib/notify');
+const crypto = require('crypto');
+const { telegramText, vizText, voiceText, tgRequestText, when, sendTelegram, sendOwnerEmail, sendTgRequestEmail, emailConfigured, notifySafely } = require('./_lib/notify');
 const { verifyInitData, verifyContact, clientToken, tgName } = require('./_lib/auth');
 const viz = require('./_lib/imagegen');
 const turnstile = require('./_lib/turnstile');
@@ -66,6 +71,7 @@ async function handler(req, res) {
   const action = String((req.query && req.query.action) || '');
   // Cererea din Telegram nu depinde de vizualizări (vizHandler respinge acțiunile necunoscute)
   if (action === 'tg-request') return tgRequest(req, res);
+  if (action === 'voice-lead') return voiceLead(req, res);
   if (action) return vizHandler(action, req, res);
   if (!allow(req, res, ['POST'])) return;
   const body = jsonBody(req);
@@ -419,8 +425,99 @@ async function tgRequest(req, res) {
   return res.status(200).json({ ok: true, appended });
 }
 
+/* ==========================================================
+   Agentul vocal ElevenLabs: unealta de server save_lead
+   ========================================================== */
+const VOICE_LIMITS = { name: 100, phone: 30, summary: 1000 };
+const VOICE_PER_PHONE_HOUR = 5;
+const VOICE_PER_DAY = 30;
+const VOICE_DUP_MS = 10 * 60 * 1000; // același telefon în 10 minute = apel repetat de agent
+
+// Comparație în timp constant; amprentele au mereu aceeași lungime, deci timingSafeEqual nu aruncă
+const sameSecret = (a, b) => {
+  const h = v => crypto.createHash('sha256').update(String(v)).digest();
+  return crypto.timingSafeEqual(h(a), h(b));
+};
+
+// Întoarce { data } sau { errors: [câmpuri greșite] }. Serviciul și tipul greșite trec pe implicit: agentul le poate ghici prost.
+function validateVoice(body) {
+  const service = str(body.service), type = str(body.type);
+  const data = {
+    name: cleanText(body.name).replace(/[\n\r\t]/g, ' '),
+    phone: cleanText(body.phone).replace(/[\n\r\t]/g, ' '),
+    summary: cleanText(body.summary),
+    lang: ['ro', 'ru', 'en'].includes(body.lang) ? body.lang : 'ro',
+    service: Object.prototype.hasOwnProperty.call(SERVICES, service) ? service : 'nu_stiu',
+    type: Object.prototype.hasOwnProperty.call(TYPES, type) ? type : 'altceva',
+  };
+  const errors = [];
+  if (!data.name) errors.push('name');
+  if (!data.phone || viz.normPhone(data.phone).length < 6) errors.push('phone');
+  if (!data.summary) errors.push('summary');
+  for (const [f, max] of Object.entries(VOICE_LIMITS)) if (data[f].length > max) errors.push(f);
+  if (body.consent !== true) errors.push('consent');
+  return errors.length ? { errors: [...new Set(errors)] } : { data };
+}
+
+const voiceRow = d => ({
+  name: d.name, phone: d.phone, email: '', type: d.type, service: d.service,
+  message: `Convorbire vocală. Rezumat: ${d.summary}`, lang: d.lang,
+  status: 'noua', source: 'voce', created_by: 'Agent vocal',
+});
+
+// O cerere „voce” cu același telefon în ultimele 10 minute (agentul a repetat apelul)
+async function recentVoiceRequest(phoneKey) {
+  const since = new Date(Date.now() - VOICE_DUP_MS).toISOString();
+  const rows = await rest(`requests?select=id,phone&source=eq.voce&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=200`);
+  return rows.find(r => viz.normPhone(r.phone) === phoneKey) || null;
+}
+
+async function voiceLead(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (!allow(req, res, ['POST'])) return;
+  const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+  if (!secret) return res.status(503).json({ ok: false, error: 'voice_off' });
+  const given = req.headers['x-webhook-secret'];
+  if (typeof given !== 'string' || !given || !sameSecret(given, secret)) return res.status(401).json({ ok: false, error: 'auth' });
+  const body = jsonBody(req);
+  if (!body) return res.status(400).json({ ok: false, error: 'invalid', fields: [] });
+  const { data, errors } = validateVoice(body);
+  if (errors) return res.status(400).json({ ok: false, error: 'invalid', fields: errors });
+
+  const row = voiceRow(data);
+  const warn = '\n\n⚠️ <i>Cererea NU a fost salvată în panou (eroare la baza de date).</i>';
+  let saved;
+  try {
+    if (!dbConfigured()) throw new Error('Supabase nu e configurat');
+    // Limitele: pe telefon și pe tot site-ul (IP-ul e mereu al ElevenLabs, deci nu ajută)
+    const phoneKey = viz.normPhone(data.phone);
+    if (await recentVoiceRequest(phoneKey)) return res.status(200).json({ ok: true });
+    const pkey = `voice:${phoneKey}`;
+    if (await countHits(pkey, 36e5) >= VOICE_PER_PHONE_HOUR) return res.status(429).json({ ok: false, error: 'rate' });
+    if (await countHits('voice-site', 864e5) >= VOICE_PER_DAY) return res.status(429).json({ ok: false, error: 'rate' });
+    await addHit(pkey);
+    await addHit('voice-site');
+    [saved] = await rest('requests', { method: 'POST', body: row, prefer: 'return=representation' });
+  } catch (e) {
+    // Baza nu răspunde (sau migrarea lipsește): cererea pleacă pe Telegram, iar agentul confirmă
+    console.error('Salvarea cererii vocale a eșuat:', noRowData(e.message));
+    try {
+      await sendTelegram(voiceText({ ...row, summary: data.summary }) + warn);
+      return res.status(200).json({ ok: true });
+    } catch (e2) {
+      console.error('Trimiterea pe Telegram a eșuat:', e2.message);
+      return res.status(502).json({ ok: false, error: 'save' });
+    }
+  }
+
+  // Cererea e salvată: un anunț eșuat ajunge doar în jurnal
+  await notifySafely([sendTelegram(voiceText({ ...saved, summary: data.summary }))]);
+  return res.status(200).json({ ok: true });
+}
+
 module.exports = handler;
 module.exports.validateTg = validateTg;
 module.exports.validateViz = validateViz;
 module.exports.validate = validate;
 module.exports.isSpam = isSpam;
+module.exports.validateVoice = validateVoice;

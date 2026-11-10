@@ -36,7 +36,7 @@
   const STATUSES = { noua: 'Nouă', contactata: 'Contactată', in_lucru: 'În lucru', procesat: 'Procesat', avans: 'Avans', platit: 'Plătit', incheiat: 'Încheiat', respins: 'Respins', inchisa: 'Închisă' };
   const TYPES = { casa: 'Casă unifamilială', ansamblu: 'Ansamblu rezidențial', birouri: 'Clădire de birouri / comercială', hala: 'Hală / industrial', expertiza: 'Expertiză / consolidare', altceva: 'Altceva' };
   const SERVICES = { arh_rez: 'Arhitectură + Rezistență', arh: 'Doar arhitectură', rez: 'Doar rezistență', design: 'Design interior', management: 'Management de proiect', nu_stiu: 'Nu știu încă' };
-  const SOURCES = { site: 'Site web', manual: 'Manual', carte_vizita: 'Carte de vizită', chestionar: 'Chestionar', document: 'Document', telegram: 'Telegram' };
+  const SOURCES = { site: 'Site web', manual: 'Manual', carte_vizita: 'Carte de vizită', chestionar: 'Chestionar', document: 'Document', telegram: 'Telegram', vizualizare: 'Site, vizualizare', voce: 'Voce' };
   // Tipurile de documente; `ready` = secțiunea lor există (restul vin în etapele următoare)
   const DOC_TYPES = {
     carte_vizita: { label: 'Carte de vizită', ready: true },
@@ -676,7 +676,7 @@
       $('#detail').innerHTML = `
         <article class="detail-card">
           <h1>${esc(r.name)}</h1>
-          <p class="muted">${srcTag(r)} Creat la ${esc(fmt(r.created_at))}${r.source === 'site' || r.tg_user_id ? ` · ${({ en: 'Engleză', ru: 'Rusă' })[r.lang] || 'Română'}` : ''}</p>
+          <p class="muted">${srcTag(r)} Creat la ${esc(fmt(r.created_at))}${r.source === 'site' || r.source === 'voce' || r.tg_user_id ? ` · ${({ en: 'Engleză', ru: 'Rusă' })[r.lang] || 'Română'}` : ''}</p>
           ${r.tg_user_id ? `<p class="muted detail-author">Cerere de la client: ${tgClientLink(r.created_by)}</p>`
             : r.created_by ? `<p class="muted detail-author">Adăugat de ${byTg(r.created_by)}</p>` : ''}
           <div class="detail-actions">

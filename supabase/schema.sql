@@ -20,7 +20,7 @@ create table if not exists public.requests (
   status_comment    text not null default '',   -- motivul, obligatoriu la „respins”
   status_updated_at timestamptz not null default now(),
   source            text not null default 'site'
-                    constraint requests_source_check check (source in ('site', 'manual', 'carte_vizita', 'chestionar', 'document', 'telegram', 'vizualizare')),
+                    constraint requests_source_check check (source in ('site', 'manual', 'carte_vizita', 'chestionar', 'document', 'telegram', 'vizualizare', 'voce')),
   channel           text not null default '' check (channel in ('', 'apel', 'intalnire')),  -- doar la „manual”
   notes             text not null default '',   -- notele interne din CRM
   created_by        text not null default '',   -- cine l-a creat din Mini App Telegram („@username” sau numele); gol din browser
@@ -569,3 +569,10 @@ grant execute on function public.issue_invoice(jsonb), public.pay_invoice(bigint
 -- Acces doar de pe server, ca restul tabelelor
 alter table public.invoice_counters enable row level security;
 alter table public.invoices         enable row level security;
+
+-- ==========================================================
+-- Agent vocal (ElevenLabs): sursa „voce”. Identic cu migrations/2026-11-10-sursa-voce.sql
+-- ==========================================================
+alter table public.requests drop constraint if exists requests_source_check;
+alter table public.requests add constraint requests_source_check
+  check (source in ('site', 'manual', 'carte_vizita', 'chestionar', 'document', 'telegram', 'vizualizare', 'voce'));

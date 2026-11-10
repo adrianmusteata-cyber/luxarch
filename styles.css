@@ -390,6 +390,9 @@ h1 em, h2 em, h3 em, .facts-list em { font-style: italic; color: var(--lux); }
 }
 .wa-float:hover { transform: scale(1.08) rotate(-6deg); }
 .wa-float svg { width: 28px; height: 28px; fill: #fff; }
+/* Butonul agentului vocal (ElevenLabs) stă în colțul din dreapta jos: WhatsApp-ul urcă deasupra lui, subsolul primește loc */
+.has-voice .wa-float { bottom: calc(112px + env(safe-area-inset-bottom)); }
+.has-voice .footer { padding-bottom: 120px; }
 
 /* ==========================================================
    GALERIE
@@ -491,6 +494,8 @@ h1 em, h2 em, h3 em, .facts-list em { font-style: italic; color: var(--lux); }
   .faq-list details p { padding-right: 0; }
   .wa-float { right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; }
   .footer { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .has-voice .wa-float { bottom: calc(100px + env(safe-area-inset-bottom)); }
+  .has-voice .footer { padding-bottom: calc(180px + env(safe-area-inset-bottom)); }
   .lb-nav, .lb-close { width: 48px; height: 48px; }
 }
 

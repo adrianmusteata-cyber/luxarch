@@ -558,6 +558,38 @@
     });
   })();
 
+  /* ---------- Agentul vocal ElevenLabs: limba widgetului și unealta navigate ---------- */
+  const voice = $('elevenlabs-convai');
+  if (voice) {
+    const VOICE_SECTIONS = ['top', 'manifest', 'servicii', 'proiecte', 'proces', 'vizualizare', 'intrebari', 'contact'];
+    // Textele butonului și limba convorbirii (următoarea convorbire, dacă limba se schimbă în timpul uneia)
+    const voiceLang = () => {
+      voice.setAttribute('override-language', lang);
+      voice.setAttribute('text-contents', JSON.stringify(X().voice || {}));
+    };
+    voiceLang();
+    langHooks.push(voiceLang);
+    // Butonul a apărut (scriptul lor s-a încărcat): WhatsApp-ul urcă deasupra lui
+    if (window.customElements) customElements.whenDefined('elevenlabs-convai').then(() => root.classList.add('has-voice'));
+
+    // Derulează lin la secțiune, fără reîncărcare; #proiecte e fixat cu ScrollTrigger pe desktop, deci ținta e începutul fixării
+    const navigate = ({ section } = {}) => {
+      const id = String(section || '').trim().toLowerCase().replace(/^#/, '');
+      const el = VOICE_SECTIONS.includes(id) ? document.getElementById(id) : null;
+      if (!el) return 'not_found';
+      setMenu(false);
+      const behavior = reduce ? 'auto' : 'smooth';
+      const st = id === 'proiecte' && anim ? ScrollTrigger.getAll().find(s => s.pin && s.trigger && s.trigger.id === 'projectsPin') : null;
+      if (st) scrollTo({ top: st.start, behavior });
+      else if (id === 'top') scrollTo({ top: 0, behavior });
+      else el.scrollIntoView({ behavior, block: 'start' });
+      return `ok: ${id}`;
+    };
+    voice.addEventListener('elevenlabs-convai:call', e => {
+      if (e.detail && e.detail.config) e.detail.config.clientTools = { navigate };
+    });
+  }
+
   $('#year').textContent = new Date().getFullYear();
 
   if (!anim) return;

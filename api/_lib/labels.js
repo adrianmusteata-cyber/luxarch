@@ -36,6 +36,7 @@ const SOURCES = {
   document: 'Document',
   telegram: 'Telegram', // cu canal: client adăugat de echipă din Mini App; fără canal: cerere trimisă de client din botul lui
   vizualizare: 'Site, vizualizare', // cererea lăsată din formularul „Vedeți-vă viitoarea casă” (schiță cu Gemini)
+  voce: 'Voce', // cererea lăsată prin agentul vocal ElevenLabs de pe pagina principală
 };
 
 // Tipurile de documente recunoscute de Claude; `ready` = secțiunea de destinație există deja

@@ -49,6 +49,24 @@ function vizText(d, line, createdAt = d.created_at || new Date()) {
   return lines.join('\n');
 }
 
+/* Cererea lăsată prin agentul vocal ElevenLabs (unealta save_lead). d = cererea salvată (cu id) sau datele, dacă baza nu răspunde;
+   d.summary = rezumatul convorbirii făcut de agent. */
+function voiceText(d, createdAt = d.created_at || new Date()) {
+  const lines = [
+    '<b>🎙 Voce: cerere nouă prin agentul vocal</b>',
+    '',
+    `<b>Nume:</b> ${esc(d.name)}`,
+    `<b>Telefon:</b> ${esc(d.phone)}`,
+    `<b>Tip proiect:</b> ${TYPES[d.type] || esc(d.type || '—')}`,
+    `<b>Servicii:</b> ${SERVICES[d.service] || esc(d.service || '—')}`,
+    `<b>Rezumat:</b> ${d.summary ? esc(d.summary) : '—'}`,
+    '',
+    `<i>Limba: ${String(d.lang || 'ro').toUpperCase()} · ${when(createdAt)} (ora Chișinăului)</i>`,
+  ];
+  if (d.id) lines.push('', `<a href="${SITE}/admin?id=${d.id}">Deschide fișa clientului</a>`);
+  return lines.join('\n');
+}
+
 /* Cererea din Mini App-ul clienților. d = { name, username, phone, service, message, lang };
    confirmed: numărul e dovedit de Telegram; appended: completare la cererea din „Nouă”; id: linkul spre fișă (lipsește dacă baza nu răspunde). */
 function tgRequestRows(d, confirmed) {
@@ -228,6 +246,6 @@ async function sendTgRequestEmail(d, { confirmed = false, appended = false, id =
 module.exports = {
   when, tgRequestText, sendTgRequestEmail,
   telegramText, sendTelegram, sendOwnerEmail, emailConfigured,
-  manualClientText, vizText, paymentText, isPayment, sendPayment, notifySafely,
+  manualClientText, vizText, voiceText, paymentText, isPayment, sendPayment, notifySafely,
   sendTelegramDocument, sendEmailWithPdf, esc,
 };
