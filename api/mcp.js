@@ -4,6 +4,7 @@
      lista_cereri   — cererile dintr-o perioadă (implicit azi, ora Moldovei), opțional dintr-o singură etapă
      cauta_client   — după nume, telefon sau email
      schimba_etapa  — mută clientul în altă etapă; istoricul îl scrie trigger-ul, cu autorul „MCP”
+     cereri_blocate — clienții din etapele active care n-au mai schimbat etapa de N zile (pentru subagentul „sumar-palnie”)
    La trecerea în Avans / Plătit pleacă același anunț pe Telegram ca din admin. */
 const crypto = require('crypto');
 const { rest } = require('./_lib/db');
@@ -70,6 +71,9 @@ const describe = r => ({
 });
 
 const STATUS_LIST = Object.values(STATUSES).join(', ');
+// Etapele în care clientul așteaptă ceva de la noi; Plătit, Încheiat, Respins și Închisă nu se mai urmăresc
+const ACTIVE = ['noua', 'contactata', 'in_lucru', 'procesat', 'avans'];
+const DAY_MS = 24 * 3600 * 1000;
 
 const TOOLS = [
   {
@@ -114,6 +118,17 @@ const TOOLS = [
       additionalProperties: false,
     },
     annotations: { destructiveHint: false, idempotentHint: true },
+  },
+  {
+    name: 'cereri_blocate',
+    title: 'Clienți blocați pe o etapă',
+    description: `Clienții din etapele active (${ACTIVE.map(k => STATUSES[k]).join(', ')}) care stau în aceeași etapă de cel puțin N zile, cei mai vechi primii.`,
+    inputSchema: {
+      type: 'object',
+      properties: { zile: { type: 'integer', minimum: 1, maximum: 365, description: 'Pragul în zile. Implicit 7.' } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
   },
 ];
 
@@ -184,7 +199,20 @@ async function changeStatus({ client, etapa, comentariu } = {}) {
   return { schimbat: true, din: STATUSES[before.status] || before.status, in: STATUSES[key], marcaj_istoric: ACTOR, client: describe(item) };
 }
 
+async function stuckRequests({ zile } = {}) {
+  const days = zile === undefined ? 7 : Number(zile);
+  if (!Number.isInteger(days) || days < 1 || days > 365) throw new ToolError('zile trebuie să fie un număr întreg între 1 și 365.');
+  const before = new Date(Date.now() - days * DAY_MS).toISOString();
+  const rows = await rest(`requests?select=${FIELDS}&status=in.(${ACTIVE.join(',')})&status_updated_at=lt.${before}&order=status_updated_at.asc&limit=${MAX_ROWS}`);
+  return {
+    prag_zile: days,
+    total: rows.length,
+    cereri: rows.map(r => ({ ...describe(r), zile_in_etapa: Math.floor((Date.now() - new Date(r.status_updated_at).getTime()) / DAY_MS) })),
+  };
+}
+
 async function callTool(name, args) {
+  if (name === 'cereri_blocate') return stuckRequests(args);
   if (name === 'lista_cereri') return listRequests(args);
   if (name === 'cauta_client') {
     const rows = await findClients(args && args.text);
