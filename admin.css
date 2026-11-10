@@ -219,6 +219,23 @@ body.admin {
   .pay-fields { grid-template-columns: 1fr; }
 }
 
+/* Facturi (fișa clientului, doar proprietarul); rândurile refolosesc .due-row */
+.inv-list { max-width: 640px; }
+.inv-list > li.muted { padding: 4px 0; }
+.inv-row .due-meta .muted { font-size: .84rem; }
+.inv-row .due-actions { gap: 4px 16px; }
+.inv-open { margin: 0 0 10px; font-size: .9rem; font-weight: 600; color: var(--ink-2); }
+.inv-open:empty { display: none; }
+.inv-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.inv-fields .admin-input { width: 100%; min-width: 0; }
+.inv-wide { grid-column: 1 / -1; }
+.inv-sum { margin: 2px 0 0; }
+.inv-sum div { min-width: 0; flex: 1 1 100px; }
+@media (max-width: 600px) {
+  .inv-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .inv-fields label:last-child { grid-column: 1 / -1; }
+}
+
 /* Documente recunoscute de Claude */
 .bar-actions { display: flex; align-items: center; gap: 8px; }
 .src-carte_vizita, .src-chestionar, .src-document { background: #E6E1F0; color: #3F3460; }

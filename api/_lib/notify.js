@@ -1,7 +1,8 @@
 /* Notificări către proprietar: Telegram și (opțional) email prin Resend.
    Variabile: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
               TELEGRAM_PAYMENTS_CHAT_ID (chatul separat „Achitări”; plățile nu ajung niciodată în chatul cererilor),
-              RESEND_API_KEY, OWNER_EMAIL, MAIL_FROM (emailul e sărit dacă lipsesc) */
+              RESEND_API_KEY, OWNER_EMAIL, MAIL_FROM (emailul e sărit dacă lipsesc)
+   Facturile (PDF atașat): sendTelegramDocument (la client sau la proprietar) și sendEmailWithPdf (la client). */
 const { TYPES, SERVICES, STATUSES, CHANNELS } = require('./labels');
 
 // Adresa publică a site-ului (linkurile din Telegram/email); se poate suprascrie cu SITE_URL în Vercel
@@ -132,6 +133,36 @@ async function sendTelegram(text, chatId = process.env.TELEGRAM_CHAT_ID) {
   if (!r.ok) throw new Error(`Telegram ${r.status}: ${await r.text()}`);
 }
 
+/* Un fișier (PDF-ul facturii) pe Telegram, prin sendDocument (multipart/form-data).
+   token: botul care trimite (implicit cel al proprietarului); caption: text HTML, cel mult 1024 de caractere */
+async function sendTelegramDocument({ data, filename, caption = '', chatId = process.env.TELEGRAM_CHAT_ID, token = process.env.TELEGRAM_BOT_TOKEN }) {
+  if (!token || !chatId) throw new Error('Lipsesc tokenul botului / chatul');
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) { form.append('caption', caption.slice(0, 1024)); form.append('parse_mode', 'HTML'); }
+  form.append('document', new Blob([data], { type: 'application/pdf' }), filename);
+  const r = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: 'POST', body: form, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`Telegram ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+
+// Email cu un PDF atașat (factura către client), prin Resend, de la MAIL_FROM
+async function sendEmailWithPdf({ to, subject, html, data, filename }) {
+  if (!process.env.RESEND_API_KEY || !process.env.MAIL_FROM) throw new Error('Lipsesc RESEND_API_KEY / MAIL_FROM');
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: process.env.MAIL_FROM,
+      to: [to],
+      subject,
+      html,
+      attachments: [{ filename, content: Buffer.from(data).toString('base64') }],
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error(`Resend ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+
 // Plățile merg doar în chatul „Achitări”; cât timp nu e setat, mesajul nu se trimite nicăieri
 async function sendPayment(text) {
   const chatId = process.env.TELEGRAM_PAYMENTS_CHAT_ID;
@@ -198,4 +229,5 @@ module.exports = {
   when, tgRequestText, sendTgRequestEmail,
   telegramText, sendTelegram, sendOwnerEmail, emailConfigured,
   manualClientText, vizText, paymentText, isPayment, sendPayment, notifySafely,
+  sendTelegramDocument, sendEmailWithPdf, esc,
 };

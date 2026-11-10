@@ -23,7 +23,14 @@
    POST /api/admin/docs/viz-cancel   { token } — renunțarea înainte de generare: pozele se șterg, rezervarea nu se mai numără
    GET  /api/admin/docs/viz-list?request_id=<id> | ?general=1 [&mine=1] → { items, used, limit, enabled, max_side, model }
    GET  /api/admin/docs/viz-open?id=<generare>&what=output|input-<n> → { url } (5 minute)
-   POST /api/admin/docs/viz-delete   { id } — rândul și fișierele; angajatul șterge doar generările lui */
+   POST /api/admin/docs/viz-delete   { id } — rândul și fișierele; angajatul șterge doar generările lui
+   Facturile clienților (doar proprietarul; angajatul → 403 forbidden), vezi _lib/invoices.js:
+   POST /api/admin/docs/invoice-create { request_id, service, qty, price, due_days } → { invoice, invoices, pdf_error? }
+   GET  /api/admin/docs/invoice-open?id=<factură> → { url } — PDF-ul, link de 5 minute (409 no_pdf dacă lipsește)
+   POST /api/admin/docs/invoice-send { id } → { invoice, invoices, sent_via, reason } — Telegram / email / proprietar;
+        502 send_failed dacă nici proprietarul nu l-a primit (sent_at rămâne gol)
+   POST /api/admin/docs/invoice-paid { id } → { invoices, moved } — plata + status atomic; a doua oară 409 already_paid
+   POST /api/admin/docs/invoice-pdf  { id } → { invoice, invoices } — reface PDF-ul cu același număr */
 const crypto = require('crypto');
 const { rest } = require('../../_lib/db');
 const { allow, jsonBody } = require('../../_lib/http');
@@ -37,6 +44,7 @@ const dues = require('../../_lib/dues');
 const catalog = require('../../_lib/catalog');
 const { STAFF_DOC_TYPES, expenseDupes } = require('../../_lib/staff');
 const viz = require('../../_lib/imagegen');
+const invoices = require('../../_lib/invoices');
 
 // Tipurile care devin cheltuieli; restul (carte de vizită, chestionar) devin clienți în CRM
 const EXPENSE_TYPES = ['aviz', 'chitanta'];
@@ -497,7 +505,71 @@ async function vizAction(action, req, res, body, staff) {
   return res.status(404).json({ ok: false, error: 'notfound' });
 }
 
-const GET_ACTIONS = ['open', 'viz-list', 'viz-open'];
+/* ---------- Facturile clienților (doar proprietarul) ---------- */
+
+const INVOICE_FULL = 'id,request_id,number,issued_at,due_date,currency,items,subtotal,vat_rate,vat,total,client,company,is_test,status,pdf_path,sent_via,sent_at,auto';
+
+async function findInvoice(id) {
+  if (!/^\d{1,18}$/.test(String(id || ''))) return null;
+  const [inv] = await rest(`invoices?select=${INVOICE_FULL}&id=eq.${id}`);
+  return inv || null;
+}
+
+async function invoiceCreate(req, body, res) {
+  const requestId = String(body.request_id || '');
+  if (!UUID_RE.test(requestId)) return res.status(404).json({ ok: false, error: 'notfound' });
+  const { data, errors } = invoices.validate(body);
+  if (errors) return res.status(400).json({ ok: false, error: 'invalid', fields: errors });
+  const [r] = await rest(`requests?select=id,name,phone,email,currency&id=eq.${requestId}`);
+  if (!r) return res.status(404).json({ ok: false, error: 'notfound' });
+  const inv = await invoices.issue(r, data, { actor: actorOf(req) });
+  return res.status(201).json({
+    ok: true, invoice: invoices.listItem(inv), invoices: await invoices.listFor(requestId), ...(inv.pdf_path ? {} : { pdf_error: true }),
+  });
+}
+
+async function invoiceAction(action, req, res, body) {
+  if (action === 'invoice-create') return invoiceCreate(req, body, res);
+  const inv = await findInvoice(action === 'invoice-open' ? req.query.id : body.id);
+  if (!inv) return res.status(404).json({ ok: false, error: 'notfound' });
+
+  if (action === 'invoice-open') {
+    if (!inv.pdf_path) return res.status(409).json({ ok: false, error: 'no_pdf' });
+    return res.status(200).json({ ok: true, url: await store.signRead(inv.pdf_path, 300) });
+  }
+  if (action === 'invoice-pdf') {
+    try {
+      inv.pdf_path = await invoices.savePdf(inv);
+    } catch (e) {
+      console.error(`Refacerea PDF-ului ${inv.number} a eșuat:`, e.message);
+      return res.status(502).json({ ok: false, error: 'pdf' });
+    }
+    return res.status(200).json({ ok: true, invoice: invoices.listItem(inv), invoices: await invoices.listFor(inv.request_id) });
+  }
+  if (action === 'invoice-send') {
+    const [r] = await rest(`requests?select=id,name,email,tg_user_id&id=eq.${inv.request_id}`);
+    if (!r) return res.status(404).json({ ok: false, error: 'notfound' });
+    let out;
+    try {
+      out = await invoices.send(inv, r);
+    } catch (e) {
+      console.error(`Trimiterea facturii ${inv.number} a eșuat:`, e.message);
+      return res.status(502).json({ ok: false, error: 'send_failed' });
+    }
+    await rest(`invoices?id=eq.${inv.id}`, { method: 'PATCH', body: { sent_via: out.sent_via, sent_at: new Date().toISOString() }, prefer: 'return=minimal' });
+    const list = await invoices.listFor(inv.request_id);
+    return res.status(200).json({ ok: true, invoice: list.find(x => x.id === inv.id), invoices: list, ...out });
+  }
+  if (action === 'invoice-paid') {
+    const out = await invoices.markPaid(inv.id, actorOf(req));
+    if (out.error === 'already_paid') return res.status(409).json({ ok: false, error: 'already_paid' });
+    if (out.error) return res.status(404).json({ ok: false, error: 'notfound' });
+    return res.status(200).json({ ok: true, moved: out.moved, invoices: await invoices.listFor(inv.request_id) });
+  }
+  return res.status(404).json({ ok: false, error: 'notfound' });
+}
+
+const GET_ACTIONS = ['open', 'viz-list', 'viz-open', 'invoice-open'];
 
 module.exports = async function handler(req, res) {
   const action = String(req.query.action || '');
@@ -512,6 +584,11 @@ module.exports = async function handler(req, res) {
     if (action === 'open') return await open(req, res, staff);
     if (action === 'upload') return await upload(body, res);
     if (action.startsWith('viz-')) return await vizAction(action, req, res, body, staff);
+    // Facturile sunt bani: angajatul (și proprietarul în „Vezi ca angajat”) nu are acces
+    if (action.startsWith('invoice-')) {
+      if (staff) return res.status(403).json({ ok: false, error: 'forbidden' });
+      return await invoiceAction(action, req, res, body);
+    }
     if (!['read', 'save', 'cancel'].includes(action)) return res.status(404).json({ ok: false, error: 'notfound' });
     if (!UUID_RE.test(String(body.token || ''))) return res.status(400).json({ ok: false, error: 'token' });
     if (action === 'read') return await read(body, res, staff);

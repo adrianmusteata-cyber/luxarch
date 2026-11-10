@@ -1,0 +1,9 @@
+{
+  "name": "luxarch",
+  "private": true,
+  "description": "Site static LUXARCH + funcții Vercel (api/). Fără build: dependențele sunt doar pentru facturile PDF.",
+  "dependencies": {
+    "@pdf-lib/fontkit": "1.1.1",
+    "pdf-lib": "1.17.1"
+  }
+}

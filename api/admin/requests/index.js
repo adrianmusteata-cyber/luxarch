@@ -7,7 +7,9 @@
    POST /api/admin/requests { name, phone, channel, email?, type?, service?, status?, notes? }
         — client adăugat manual, cu canalul „apel” sau „intalnire”: sursa „manual” din browser,
           „telegram” din Mini App, cu created_by = „@username” (sau numele) din initData verificat.
-          Un created_by trimis în corp se ignoră. Cere migrarea 2026-10-30-telegram-autor.sql. */
+          Un created_by trimis în corp se ignoră. Cere migrarea 2026-10-30-telegram-autor.sql.
+          Clientul creat direct în „Procesat” primește factura automată (_lib/invoices.js); fără valoarea contractului,
+          proprietarul primește doar mesajul că factura nu s-a emis. */
 const { rest } = require('../../_lib/db');
 const { allow, jsonBody } = require('../../_lib/http');
 const { requireAdmin, actorOf } = require('../../_lib/auth');
@@ -15,6 +17,7 @@ const { TYPES, SERVICES, STATUSES, CHANNELS } = require('../../_lib/labels');
 const { receivablesWithState } = require('../../_lib/dues');
 const { stripMoney } = require('../../_lib/staff');
 const { manualClientText, paymentText, isPayment, sendTelegram, sendPayment, notifySafely } = require('../../_lib/notify');
+const { autoIssue } = require('../../_lib/invoices');
 
 const PAGE = 50;
 const BOARD_MAX = 1000;
@@ -109,6 +112,7 @@ async function create(req, res, role) {
   // Telegram: clientul nou în chatul principal; dacă e creat direct ca Avans/Plătit, și în „Achitări”
   const jobs = [sendTelegram(manualClientText(item))];
   if (isPayment(item.status)) jobs.push(sendPayment(paymentText(item)));
+  if (item.status === 'procesat') jobs.push(autoIssue(item, actor));
   await notifySafely(jobs);
   return res.status(201).json({ ok: true, item: role === 'staff' ? stripMoney(item) : item });
 }

@@ -662,7 +662,7 @@
     $('#detail').innerHTML = '<p class="admin-msg">Se încarcă…</p>';
     show('detail');
     try {
-      const { item: r, history: hist, payments: pays, documents: docs = [], receivables: recs = [] } = await api('/api/admin/requests/' + encodeURIComponent(id));
+      const { item: r, history: hist, payments: pays, documents: docs = [], receivables: recs = [], ...inv } = await api('/api/admin/requests/' + encodeURIComponent(id));
       // Ratele de încasat ale clientului, cu starea calculată din plăți
       const recsHtml = `<p class="admin-label rec-title">Scadențe (de încasat)</p>
         ${recs.length ? `<ul class="due-list">${recs.map(x => `<li class="due-row is-${esc(x.state)}">
@@ -737,7 +737,8 @@
                 <p class="status-note err" id="payMsg" role="alert"></p>
               </form>
               ${recsHtml}
-            </dd>`}
+            </dd>
+            <dt>Facturi</dt><dd class="inv" id="invBox"></dd>`}
             <dt>Istoric etape</dt><dd><ol class="history" id="history">${historyHtml(hist)}</ol></dd>
           </dl>
           ${isStaff() ? '' : '<div class="detail-danger"><button class="link-btn danger" type="button" id="delClient">Șterge clientul</button></div>'}
@@ -748,6 +749,8 @@
       if (!isStaff()) bindDelete(r);
       // Angajatul nu are plăți și rate (serverul nici nu le trimite)
       if (!isStaff()) bindPayments(r, pays || [], moveTo);
+      // Facturile: doar proprietarul (serverul nu le trimite angajatului și refuză acțiunile cu 403)
+      if (!isStaff()) bindInvoices(r, inv);
     } catch (err) {
       if (seq !== loadSeq) return;
       onError(err, e => {
@@ -985,6 +988,186 @@
     });
 
     render();
+  }
+
+  /* ---------- Facturi (doar proprietarul) ---------- */
+  const INV_SENT = { telegram: 'Trimisă pe Telegram', email: 'Trimisă pe email', proprietar: 'Trimisă proprietarului' };
+  const INV_FIELDS = { service: 'serviciul', qty: 'cantitatea', price: 'prețul', due_days: 'termenul' };
+  // Aceleași calcule ca pe server: în cenți, TVA adăugat peste preț
+  function invTotals(qty, price, rate) {
+    const line = Math.round(Math.round(qty * 100) * Math.round(price * 100) / 100);
+    const vat = Math.round(line * rate / 100);
+    return { subtotal: line / 100, vat: vat / 100, total: (line + vat) / 100 };
+  }
+
+  function bindInvoices(r, data) {
+    const box = $('#invBox');
+    const rate = data.vat_rate || 20;
+    const defs = data.invoice_defaults || {};
+    let list = data.invoices || [];
+    if (!data.invoices_ready) {
+      box.innerHTML = '<p class="muted">Facturile pornesc după migrarea bazei de date (supabase/migrations/2026-11-10-facturi.sql).</p>';
+      return;
+    }
+    box.innerHTML = `<ul class="due-list inv-list" id="invList"></ul>
+      <p class="inv-open" id="invOpen"></p>
+      <button class="btn btn-sm" id="invAdd" type="button">+ Emite factura</button>
+      <form class="pay-form" id="invForm" hidden novalidate>
+        <div class="inv-fields">
+          <label class="new-field inv-wide"><span class="admin-label">Serviciu</span><input class="admin-input" name="service" maxlength="300" autocomplete="off" required></label>
+          <label class="new-field"><span class="admin-label">Cantitate</span><input class="admin-input" name="qty" inputmode="decimal" autocomplete="off" required></label>
+          <label class="new-field"><span class="admin-label">Preț unitar, fără TVA (<span id="invCur"></span>)</span><input class="admin-input" name="price" inputmode="decimal" autocomplete="off" required></label>
+          <label class="new-field"><span class="admin-label">Termen de plată (zile)</span><input class="admin-input" name="due_days" type="number" inputmode="numeric" min="1" max="365" step="1" required></label>
+        </div>
+        <div class="pay-totals inv-sum" id="invSum"></div>
+        <div class="reject-actions">
+          <button class="btn btn-sm" type="submit" id="invSave">Emite</button>
+          <button class="btn btn-sm btn-ghost" type="button" id="invCancel">Anulează</button>
+        </div>
+        <p class="status-note err" id="invMsg" role="alert"></p>
+      </form>`;
+    const form = $('#invForm'), msg = $('#invMsg'), addBtn = $('#invAdd'), saveBtn = $('#invSave');
+
+    function rowHtml(x) {
+      const paid = x.status === 'achitata';
+      const late = !paid && x.due_date < today();
+      const tags = [
+        paid ? `<span class="due-tag is-paid">Achitată ${esc(fmtPayDay(x.paid_on || ''))}</span>`
+          : `<span class="due-tag${late ? ' is-overdue' : ''}">${late ? 'Neachitată, termen depășit' : 'Neachitată'}</span>`,
+        `<span class="muted">Termen ${esc(fmtPayDay(x.due_date))}</span>`,
+        x.auto ? '<span class="due-tag">Automată</span>' : '',
+        x.is_test ? '<span class="due-tag is-soon">Date de test</span>' : '',
+        x.has_pdf ? '' : '<span class="due-tag is-overdue">PDF lipsă</span>',
+        x.sent_at ? `<span class="muted">${esc(INV_SENT[x.sent_via] || 'Trimisă')} · ${esc(fmt(x.sent_at))}</span>` : '',
+      ].filter(Boolean).join('');
+      const sendLabel = x.sent_via === 'proprietar' ? 'Trimisă proprietarului · trimite din nou' : x.sent_at ? 'Trimite din nou' : 'Trimite clientului';
+      return `<li class="due-row inv-row${paid ? ' is-paid' : late ? ' is-overdue' : ''}" data-id="${esc(x.id)}">
+        <div class="due-main"><time>${esc(fmtDay(x.issued_at))}</time><span class="due-who">${esc(x.number)}</span><b class="due-sum">${esc(money(x.total, x.currency))}</b></div>
+        <div class="due-meta">${tags}</div>
+        <div class="due-actions">
+          ${x.has_pdf ? '<button class="link-btn" type="button" data-act="open">Deschide PDF</button>'
+            : '<button class="link-btn" type="button" data-act="pdf">Refă PDF-ul</button>'}
+          <button class="link-btn" type="button" data-act="send">${esc(sendLabel)}</button>
+          ${paid ? '' : '<button class="link-btn" type="button" data-act="paid">Marchează achitată</button>'}
+        </div>
+      </li>`;
+    }
+
+    function render() {
+      $('#invList').innerHTML = list.length ? list.map(rowHtml).join('') : '<li class="muted">Nicio factură încă.</li>';
+      // Totalul neachitat, pe monede (o factură își păstrează moneda de la emitere)
+      const open = {};
+      list.filter(x => x.status !== 'achitata').forEach(x => { open[x.currency] = (open[x.currency] || 0) + Number(x.total); });
+      const parts = Object.entries(open).map(([cur, v]) => money(Math.round(v * 100) / 100, cur));
+      $('#invOpen').textContent = parts.length ? `Neachitate: ${parts.join(' + ')}` : '';
+    }
+
+    function updateSum() {
+      const qty = parseMoney(form.elements.qty.value), price = parseMoney(form.elements.price.value);
+      if (!qty || !price) { $('#invSum').innerHTML = '<div><span>Total</span><b>—</b></div>'; return; }
+      const t = invTotals(qty, price, rate), cur = r.currency;
+      $('#invSum').innerHTML = [['Subtotal', t.subtotal], [`TVA ${rate}%`, t.vat], ['Total', t.total]]
+        .map(([k, v]) => `<div><span>${k}</span><b>${esc(money(v, cur))}</b></div>`).join('');
+    }
+
+    function openForm() {
+      form.elements.service.value = defs.service || '';
+      form.elements.qty.value = '1';
+      // Prețul vine din valoarea contractului de acum (poate fi schimbată mai sus, în „Plăți”)
+      form.elements.price.value = hasContract(r) && Number(r.contract_value) > 0 ? num(r.contract_value) : '';
+      form.elements.due_days.value = defs.due_days || 10;
+      $('#invCur').textContent = r.currency;
+      msg.textContent = '';
+      form.hidden = false; addBtn.hidden = true;
+      updateSum();
+      form.elements.service.focus();
+    }
+    function closeForm() { form.hidden = true; addBtn.hidden = false; }
+
+    addBtn.addEventListener('click', openForm);
+    $('#invCancel').addEventListener('click', closeForm);
+    form.addEventListener('input', updateSum);
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const service = form.elements.service.value.trim();
+      const qty = parseMoney(form.elements.qty.value);
+      const price = parseMoney(form.elements.price.value);
+      const dueDays = Number(form.elements.due_days.value);
+      if (!service) { msg.textContent = 'Scrieți denumirea serviciului.'; form.elements.service.focus(); return; }
+      if (!qty) { msg.textContent = 'Cantitatea trebuie să fie mai mare ca 0 (cel mult 2 zecimale).'; form.elements.qty.focus(); return; }
+      if (!price) { msg.textContent = 'Prețul trebuie să fie cel puțin 0,01.'; form.elements.price.focus(); return; }
+      if (!Number.isInteger(dueDays) || dueDays < 1 || dueDays > 365) { msg.textContent = 'Termenul: între 1 și 365 de zile.'; form.elements.due_days.focus(); return; }
+      // Butonul stă blocat până vine răspunsul
+      saveBtn.disabled = true; msg.textContent = '';
+      try {
+        const res = await api('/api/admin/docs/invoice-create', {
+          method: 'POST', body: JSON.stringify({ request_id: r.id, service, qty, price, due_days: dueDays }),
+        });
+        list = res.invoices;
+        closeForm();
+        render();
+        if (res.pdf_error) alert(`Factura ${res.invoice.number} e emisă, dar PDF-ul nu s-a putut face. Apăsați „Refă PDF-ul”.`);
+      } catch (err) {
+        onError(err, e2 => {
+          msg.textContent = e2.status === 400
+            ? `Verificați: ${(e2.fields || []).map(f => INV_FIELDS[f] || f).join(', ')}.`
+            : e2.status === 404 ? 'Clientul nu mai există.' : 'Factura nu s-a emis. Încercați din nou.';
+        });
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    $('#invList').addEventListener('click', async e => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const x = list.find(i => String(i.id) === btn.closest('li').dataset.id);
+      if (!x) return;
+      const act = btn.dataset.act;
+      if (act === 'open') return openInvoice(x.id);
+      if (act === 'send' && x.sent_at && x.sent_via !== 'proprietar' && !confirm(`Factura ${x.number} a fost deja trimisă. O trimiți din nou?`)) return;
+      if (act === 'paid' && !confirm(`Marchezi factura ${x.number} (${money(x.total, x.currency)}) ca achitată?\nSe adaugă plata în fișă, iar clientul trece în „Plătit” (dacă nu e deja în „Plătit” sau „Încheiat”).`)) return;
+      btn.disabled = true;
+      const old = btn.textContent;
+      if (act === 'send') btn.textContent = 'Se trimite…';
+      try {
+        if (act === 'pdf') {
+          ({ invoices: list } = await api('/api/admin/docs/invoice-pdf', { method: 'POST', body: JSON.stringify({ id: x.id }) }));
+          render();
+        } else if (act === 'send') {
+          const res = await api('/api/admin/docs/invoice-send', { method: 'POST', body: JSON.stringify({ id: x.id }) });
+          list = res.invoices;
+          render();
+          if (res.sent_via === 'proprietar') alert(`Nu s-a putut trimite clientului: ${res.reason}.\nPDF-ul a ajuns pe Telegram la dumneavoastră. Trimiteți-l manual.`);
+        } else if (act === 'paid') {
+          await api('/api/admin/docs/invoice-paid', { method: 'POST', body: JSON.stringify({ id: x.id }) });
+          loadDetail(r.id); // plata nouă, etapa și istoricul se schimbă: fișa se reîncarcă
+        }
+      } catch (err) {
+        btn.disabled = false; btn.textContent = old;
+        onError(err, e2 => {
+          if (e2.status === 409 && e2.message === 'already_paid') { alert('Factura e deja achitată.'); loadDetail(r.id); return; }
+          if (e2.status === 404) { alert('Factura nu mai există.'); loadDetail(r.id); return; }
+          alert(act === 'send' ? 'Factura nu s-a putut trimite. Încercați din nou.'
+            : act === 'pdf' ? 'PDF-ul nu s-a putut face. Încercați din nou.' : 'Nu s-a salvat. Încercați din nou.');
+        });
+      }
+    });
+
+    render();
+  }
+
+  // PDF-ul facturii: link de 5 minute, ca documentele (fereastra se deschide imediat, adresa vine după)
+  async function openInvoice(invId) {
+    const w = window.open('', '_blank');
+    try {
+      const { url } = await api('/api/admin/docs/invoice-open?id=' + encodeURIComponent(invId));
+      if (w) { w.opener = null; w.location = url; } else location.href = url;
+    } catch (err) {
+      if (w) w.close();
+      onError(err, e2 => alert(e2.status === 409 ? 'PDF-ul lipsește. Apăsați „Refă PDF-ul”.' : 'Nu am putut deschide factura. Încercați din nou.'));
+    }
   }
 
   $('#back').addEventListener('click', e => internal(e, e.currentTarget));

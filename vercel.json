@@ -5,7 +5,10 @@
     { "source": "/api/admin/logout", "destination": "/api/admin/session?op=logout" }
   ],
   "functions": {
-    "api/admin/docs/[action].js": { "maxDuration": 60 },
+    "api/admin/docs/[action].js": { "maxDuration": 60, "includeFiles": "api/_lib/fonts/**" },
+    "api/admin/requests/[id].js": { "includeFiles": "api/_lib/fonts/**" },
+    "api/admin/requests/index.js": { "includeFiles": "api/_lib/fonts/**" },
+    "api/mcp.js": { "includeFiles": "api/_lib/fonts/**" },
     "api/contact.js": { "maxDuration": 60 }
   },
   "headers": [

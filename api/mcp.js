@@ -5,12 +5,13 @@
      cauta_client   — după nume, telefon sau email
      schimba_etapa  — mută clientul în altă etapă; istoricul îl scrie trigger-ul, cu autorul „MCP”
      cereri_blocate — clienții din etapele active care n-au mai schimbat etapa de N zile (pentru subagentul „sumar-palnie”)
-   La trecerea în Avans / Plătit pleacă același anunț pe Telegram ca din admin. */
+   La trecerea în Avans / Plătit pleacă același anunț pe Telegram ca din admin, iar la „Procesat” se emite
+   factura automată (o singură dată pe fișă), tot ca din admin (_lib/invoices.js). */
 const crypto = require('crypto');
 const { rest } = require('./_lib/db');
 const { jsonBody } = require('./_lib/http');
 const { STATUSES, SOURCES } = require('./_lib/labels');
-const { paymentText, isPayment, sendPayment, notifySafely } = require('./_lib/notify');
+const { afterStatusChange } = require('./_lib/invoices');
 
 const ACTOR = 'MCP';
 const TZ = 'Europe/Chisinau';
@@ -190,12 +191,7 @@ async function changeStatus({ client, etapa, comentariu } = {}) {
   const patch = { status: key, status_comment: comment, status_updated_at: new Date().toISOString(), status_actor: ACTOR };
   const [item] = await rest(`requests?id=eq.${before.id}`, { method: 'PATCH', body: patch, prefer: 'return=representation' });
   if (!item) throw new ToolError('Clientul nu mai există.');
-  if (isPayment(key)) {
-    const paid = await rest(`payments?select=amount&request_id=eq.${item.id}`)
-      .then(rows => rows.reduce((s, p) => s + Number(p.amount), 0))
-      .catch(() => null);
-    await notifySafely([sendPayment(paymentText(item, paid))]);
-  }
+  await afterStatusChange(before.status, item, ACTOR);
   return { schimbat: true, din: STATUSES[before.status] || before.status, in: STATUSES[key], marcaj_istoric: ACTOR, client: describe(item) };
 }
 
