@@ -1,0 +1,6 @@
+# git-guards: LF for hooks and scripts (byte-for-byte checks; Windows core.autocrlf)
+scripts/*.sh text eol=lf
+scripts/git-guards/* text eol=lf
+githooks/* text eol=lf
+.claude/hooks/* text eol=lf
+.gitguards.conf text eol=lf

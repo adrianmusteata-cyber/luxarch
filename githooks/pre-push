@@ -1,0 +1,487 @@
+#!/usr/bin/env sh
+# CANONICAL pre-push. Lives in the repository and is installed into
+# $GIT_COMMON_DIR/monitorex-hooks (outside any checkout) — otherwise switching
+# the main working tree to an old revision hands git an old version of this
+# file, and its own checks simply vanish.
+#
+# 🔴 The ONLY automatic type check in the project (see below), plus the
+# parallel-session barriers. Order matters: cheap rejections come before tsc.
+
+set -e
+# Git Bash: never rewrite `refs/…:path` arguments into Windows path lists
+export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}refs/"
+
+COMMON=$(git rev-parse --git-common-dir)
+case "$COMMON" in /*) ;; *) COMMON="$(cd "$COMMON" && pwd -P)" ;; esac
+ZERO="0000000000000000000000000000000000000000"
+
+# ── Project configuration ────────────────────────────────────────────────────
+# The hook lives OUTSIDE the working tree and serves any stack, so everything
+# project-specific comes from .gitguards.conf. No file — the defaults below
+# apply: the parallel-session barriers always work, and the type check is
+# silently skipped (nothing to check with).
+#
+# 🔴 The tree's .gitguards.conf is NOT sourced (H1′). It is a file on disk of the
+# tree being pushed — uncommitted, editable in one step: `exit 0` there ended the
+# hook before every barrier, `GG_PROTECTED="wt/x"` made the release-gate diff
+# empty, `git() { :; }` replaced git in every check. All policy (protected branch,
+# release-gate, plan gate, type check command, dev-ready globs) is POLICY: it is
+# read line by line, never evaluated, from the protected branch on origin.
+# Protected branch: refs/remotes/origin/HEAD → origin/main → origin/master; no
+# origin remote, or the branch has no config yet → the main working tree's
+# .gitguards.conf. The same parser lives in githooks/plan-gate.sh and
+# scripts/git-safe-commit.sh — keep the three in sync.
+GG_PROTECTED="main"
+GG_TYPECHECK_CMD=""
+GG_DEV_READY_GLOBS=""
+GG_REQUIRE_DEV_READY=0
+GG_DEV_CMD=""
+GG_RELEASE_GATE=0
+GG_RELEASE_GATE_SKIP="*.md"
+GG_TOP=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
+MAIN_CONF="$(dirname "$COMMON")/.gitguards.conf"
+
+# Value of the LAST `KEY=` line of stdin; one pair of quotes removed, nothing evaluated.
+conf_raw() {
+    _l=$(grep -E "^$1=" | tail -n 1 | tr -d '\r')
+    [ -n "$_l" ] || return 1
+    _v=${_l#*=}
+    case "$_v" in
+        \"*) _r=${_v#\"}; case "$_r" in *\"*) _v=${_r%%\"*} ;; *) return 1 ;; esac ;;
+        \'*) _r=${_v#\'}; case "$_r" in *\'*) _v=${_r%%\'*} ;; *) return 1 ;; esac ;;
+        *) _v=${_v%%[[:space:]]#*}; _v=$(printf '%s' "$_v" | sed 's/[[:space:]]*$//') ;;
+    esac
+    printf '%s\n' "$_v"
+}
+# Allowlist of policy keys and the shape of each value.
+conf_valid() {
+    case "$1" in
+        GG_RELEASE_GATE|GG_REQUIRE_DEV_READY)
+            printf '%s' "$2" | grep -Eq '^[01]$' ;;
+        GG_PROTECTED)
+            printf '%s' "$2" | grep -Eq '^[A-Za-z0-9._/-]+$' && ! printf '%s' "$2" | grep -q '\.\.' ;;
+        GG_RELEASE_GATE_SKIP)
+            printf '%s' "$2" | grep -Eq '^[][A-Za-z0-9_.*?/ -]*$' ;;
+        # Goes into `find` unquoted — words only, none starting with - ( or ! (L5).
+        GG_DEV_READY_GLOBS)
+            printf '%s' "$2" | grep -Eq '^([A-Za-z0-9_./*][A-Za-z0-9_./*-]*( [A-Za-z0-9_./*][A-Za-z0-9_./*-]*)*)?$' ;;
+        GG_TYPECHECK_CMD|GG_DEV_CMD)
+            ! printf '%s' "$2" | LC_ALL=C grep -q '[[:cntrl:]]' ;;
+        *) return 1 ;;
+    esac
+}
+conf_get() {
+    _cv=$(conf_raw "$1") || return 1
+    conf_valid "$1" "$_cv" || { echo "⚠️  pre-push: ignoring invalid $1 in the policy" >&2; return 1; }
+    printf '%s\n' "$_cv"
+}
+
+# Protected branch.
+PROT_REF=""
+if git remote get-url origin >/dev/null 2>&1; then
+    _h=$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null) || _h=""
+    for _b in "${_h#refs/remotes/origin/}" main master; do
+        [ -n "$_b" ] || continue
+        if git rev-parse -q --verify "refs/remotes/origin/$_b^{commit}" >/dev/null 2>&1; then
+            GG_PROTECTED=$_b; PROT_REF="refs/remotes/origin/$_b"; break
+        fi
+    done
+elif [ -f "$MAIN_CONF" ]; then
+    GG_PROTECTED=$(conf_get GG_PROTECTED < "$MAIN_CONF") || GG_PROTECTED="main"
+fi
+
+# Policy text: the protected branch's config on origin, else the main working tree's.
+POLICY=""
+POLICY_FROM_ORIGIN=0
+if [ -n "$PROT_REF" ] && POLICY=$(git show "$PROT_REF:.gitguards.conf" 2>/dev/null); then
+    POLICY_FROM_ORIGIN=1
+elif [ -f "$MAIN_CONF" ]; then
+    POLICY=$(cat "$MAIN_CONF")
+fi
+pol() { printf '%s\n' "$POLICY" | conf_get "$1"; }
+
+GG_TYPECHECK_CMD=$(pol GG_TYPECHECK_CMD) || GG_TYPECHECK_CMD=""
+GG_DEV_READY_GLOBS=$(pol GG_DEV_READY_GLOBS) || GG_DEV_READY_GLOBS=""
+GG_REQUIRE_DEV_READY=$(pol GG_REQUIRE_DEV_READY) || GG_REQUIRE_DEV_READY=0
+# Only printed in a hint, never run — the tree's value is fine as a fallback.
+GG_DEV_CMD=$(pol GG_DEV_CMD) \
+    || GG_DEV_CMD=$( [ -f "$GG_TOP/.gitguards.conf" ] && conf_get GG_DEV_CMD < "$GG_TOP/.gitguards.conf" ) \
+    || GG_DEV_CMD=""
+
+# The release-gate is enabled by repository POLICY, not by the branch: a tree from
+# an old base does not know about the new flag. Enabled on origin OR in the main
+# working tree means enabled (fail-closed: this key can only tighten). The remote
+# branch is the primary source: the main tree's checkout can be far behind.
+[ "$(pol GG_RELEASE_GATE 2>/dev/null)" = "1" ] && GG_RELEASE_GATE=1
+if [ "$GG_RELEASE_GATE" != "1" ] && [ -f "$MAIN_CONF" ] \
+   && [ "$(conf_get GG_RELEASE_GATE < "$MAIN_CONF" 2>/dev/null)" = "1" ]; then
+    GG_RELEASE_GATE=1
+fi
+# The "no review needed" masks are policy too, not a branch setting: a branch that
+# set GG_RELEASE_GATE_SKIP="*" for itself would ship without review.
+GG_RELEASE_GATE_SKIP=$(pol GG_RELEASE_GATE_SKIP) || GG_RELEASE_GATE_SKIP="*.md"
+
+# Plan gate (githooks/plan-gate.sh): on when the policy names any of its keys.
+PLAN_GATE_ON=0
+printf '%s\n' "$POLICY" | grep -Eq '^GG_PLAN_(GATE|REQUIRED_TYPES|REQUIRED_NEW)=' && PLAN_GATE_ON=1
+GATE_DIR="$COMMON/monitorex-locks/release-gate"
+
+PROTECTED="$GG_PROTECTED"
+ALLOW="$COMMON/monitorex-locks/push-allow"
+# Session identity. Empty means there is no way to prove authorship, and every
+# new commit will have to be confirmed via the allowlist. For a human this is a
+# one-time setup: export MONITOREX_ACTOR="alice".
+ACTOR="${CLAUDE_CODE_SESSION_ID:-${MONITOREX_ACTOR:-}}"
+
+# ─── 0. The hooks must be canonical ─────────────────────────────────────────
+# `npm install` runs `prepare: husky`, which restores a relative core.hooksPath —
+# then a worktree from an old base would bypass the guard.
+# Compare RESOLVED paths, not strings: on macOS /var/folders is a symlink to
+# /private/var, and the same directory yields two different strings.
+HP=$(git config core.hooksPath || echo "")
+HP_R=""
+[ -n "$HP" ] && HP_R=$(cd "$HP" 2>/dev/null && pwd -P || echo "")
+EXPECT="$COMMON/monitorex-hooks"
+EXPECT_R=$(cd "$EXPECT" 2>/dev/null && pwd -P || echo "$EXPECT")
+if [ "$HP_R" != "$EXPECT_R" ]; then
+     echo ""
+     echo "🔴 core.hooksPath is not canonical: '${HP:-not set}'"
+     echo "   Expected: $EXPECT"
+     echo "   Looks like npm install restored the husky path. To fix:"
+     echo "     bash scripts/install-git-guards.sh"
+     echo ""
+     exit 1
+fi
+
+# ─── 1. stdin is read ONCE ──────────────────────────────────────────────────
+# A second loop would get EOF, pushed_any would stay 0 — and the type check
+# would silently never run.
+REFS=$(cat)
+[ -n "$REFS" ] || exit 0
+
+REMOTE_NAME="$1"
+
+pushing_head=0
+pushed_any=0
+
+# ─── 2. Barriers for each pushed ref ────────────────────────────────────────
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "$local_sha" ] && continue
+    pushed_any=1
+
+    # --- branch deletion ---
+    if [ "$local_sha" = "$ZERO" ]; then
+        case "$remote_ref" in
+          refs/heads/"$PROTECTED")
+            echo ""; echo "🔴 Deleting protected branch $PROTECTED is forbidden locally."
+            echo "   We do not rely on GitHub settings — we cannot see them."; echo ""
+            exit 1 ;;
+        esac
+        continue
+    fi
+
+    # --- tags ---
+    case "$remote_ref" in
+      refs/tags/*)
+        if [ "$remote_sha" != "$ZERO" ]; then
+            echo ""; echo "🔴 Overwriting tag $remote_ref is destructive — rejected."; echo ""
+            exit 1
+        fi
+        continue ;;
+      refs/heads/*) ;;
+      *)
+        echo ""; echo "🔴 Push to $remote_ref is not supported by the guard (fail-closed)."; echo ""
+        exit 1 ;;
+    esac
+
+    # --- branch update: fast-forward is mandatory ---
+    if [ "$remote_sha" != "$ZERO" ]; then
+        if ! git cat-file -e "$remote_sha" 2>/dev/null; then
+            echo ""; echo "🔴 Object $remote_sha is not available locally — nothing to compare with."
+            echo "   Run git fetch and retry."; echo ""
+            exit 1
+        fi
+        if ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+            echo ""; echo "🔴 Not a fast-forward: $remote_ref would move backwards."
+            echo "   That erases other people's commits. Rebase onto the fresh branch."; echo ""
+            exit 1
+        fi
+    fi
+
+    # --- ownership: whose commit is shipping ---
+    # Incident of 02.09.2026: a push carried a neighboring session's commit to the
+    # remote that nobody had approved. Earlier `2a2280f1`, which was awaiting a deploy
+    # decision, shipped the same way. Look ONLY at commits that are not yet on any
+    # remote — old history does not get here and breaks nothing.
+    if [ "$remote_sha" = "$ZERO" ]; then
+        new_commits=$(git rev-list "$local_sha" --not --remotes="$REMOTE_NAME" 2>/dev/null)
+    else
+        # Not "remote_sha..local_sha": that pulled in commits already present in
+        # OTHER remote branches (main's merge commits after fast-forwarding the
+        # branch), and the hook called them someone else's work (25.10.2026, PR #227).
+        new_commits=$(git rev-list "$local_sha" --not "$remote_sha" --remotes="$REMOTE_NAME" 2>/dev/null)
+    fi
+
+    foreign=""
+    for sha in $new_commits; do
+        owner=$(git log -1 --format='%(trailers:key=Session-Id,valueonly)' "$sha" | tr -d '\n')
+        [ -n "$ACTOR" ] && [ "$owner" = "$ACTOR" ] && continue          # our own
+        if [ -f "$ALLOW" ] && grep -qx "$sha" "$ALLOW" 2>/dev/null; then
+            continue                                                    # explicitly allowed
+        fi
+        foreign="$foreign$sha
+"
+    done
+
+    if [ -n "$foreign" ]; then
+        echo ""
+        echo "🔴 The push contains commits that this session did not create:"
+        echo ""
+        printf '%s' "$foreign" | while read -r sha; do
+            [ -n "$sha" ] || continue
+            printf '     %s  %s\n' "$(git rev-parse --short "$sha")" "$(git log -1 --format=%s "$sha")"
+            printf '       author: %s   Session-Id: %s\n' \
+                "$(git log -1 --format='%an' "$sha")" \
+                "$(git log -1 --format='%(trailers:key=Session-Id,valueonly)' "$sha" | tr -d '\n' | sed 's/^$/none/')"
+        done
+        echo ""
+        echo "   Pushing someone else's work under your name is allowed only deliberately:"
+        echo "     scripts/git-allow-push.sh add <sha…>"
+        echo ""
+        [ -z "$ACTOR" ] && echo "   (session identity is not set — set MONITOREX_ACTOR, otherwise even"
+        [ -z "$ACTOR" ] && echo "    your own commits do not count as yours)"
+        [ -z "$ACTOR" ] && echo ""
+        exit 1
+    fi
+
+    # --- plan gate: a feature or a new migration needs an approved plan ---
+    # Same commit set as the ownership check: commits not yet on the remote the
+    # push goes to (--remotes=<this remote>, C1 — a local `git remote add -f snapshot .`
+    # does not exempt anything). The logic is the INSTALLED githooks/plan-gate.sh,
+    # put next to this hook from the protected branch on origin.
+    if [ "$PLAN_GATE_ON" = "1" ] && [ -n "$new_commits" ]; then
+        PG="$COMMON/monitorex-hooks/plan-gate.sh"
+        if [ ! -f "$PG" ]; then
+            echo ""
+            echo "🔴 plan gate: the policy turns it on, but $PG is not installed."
+            echo "   Reinstall the hooks from the main working tree: bash scripts/install-git-guards.sh"
+            echo ""
+            exit 1
+        fi
+        # shellcheck disable=SC2086 # one SHA per word
+        sh "$PG" --commits $new_commits || exit 1
+    fi
+
+    # --- release-gate: an Opus reviewer has read the branch diff ---
+    # Reviewers look at the plan, but bugs live in the code. Code from Sonnet/Haiku
+    # subagents used to be looked at by nobody after implementation. The verdict is set
+    # by the release-gate agent (scripts/release-gate.sh pass) and tied to the commit's
+    # TREE: a content change revokes it, a rebuild without changes does not.
+    if [ "$GG_RELEASE_GATE" = "1" ]; then
+        bref="refs/remotes/$REMOTE_NAME/$PROTECTED"
+        if ! git rev-parse --verify -q "$bref" >/dev/null 2>&1; then
+            echo ""
+            echo "🔴 release-gate: no $bref — nothing to compare with. Run git fetch."
+            echo ""
+            exit 1
+        fi
+        if ! gbase=$(git merge-base "$bref" "$local_sha" 2>/dev/null); then
+            echo ""
+            echo "🔴 release-gate: $(git rev-parse --short "$local_sha") has no common history with $bref — cannot build a diff."
+            echo ""
+            exit 1
+        fi
+        # The mask logic matches release-gate.sh — otherwise the script would say
+        # "no review needed" while the hook refuses. --no-renames: otherwise renaming
+        # code to *.md would look like "docs only".
+        need=$(git -c core.quotePath=false diff --no-renames --name-only "$gbase" "$local_sha" | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            skip=0
+            set -f
+            for pat in $GG_RELEASE_GATE_SKIP; do
+                case "$f" in ($pat) skip=1 ;; esac
+            done
+            set +f
+            [ "$skip" = 1 ] || printf '%s\n' "$f"
+        done)
+        gtree=$(git rev-parse "$local_sha^{tree}")
+        # A verdict counts only if it is real: a verdict= line and a head= whose
+        # tree matches the one being pushed. An empty file created bypassing the
+        # script is not a verdict.
+        gvalid=0
+        if [ -f "$GATE_DIR/$gtree" ] \
+           && grep -qE '^verdict=(pass|override)$' "$GATE_DIR/$gtree"; then
+            ghead=$(sed -n 's/^head=//p' "$GATE_DIR/$gtree" | head -1)
+            if [ -n "$ghead" ] \
+               && [ "$(git rev-parse -q --verify "$ghead^{tree}" 2>/dev/null)" = "$gtree" ]; then
+                gvalid=1
+            fi
+        fi
+        if [ -n "$need" ] && [ "$gvalid" = 0 ]; then
+            echo ""
+            echo "🔴 release-gate: the diff of $(git rev-parse --short "$local_sha") has not passed final review."
+            echo ""
+            echo "   Code moves on only after an Opus reviewer's verdict. Run the"
+            echo "   release-gate agent on this tree — it will read the diff from $PROTECTED"
+            echo "   and on ✅ record the verdict (scripts/release-gate.sh status — to check)."
+            echo ""
+            echo "   The verdict is tied to the content: after any change, review again."
+            echo "   Bypass is for a human only: scripts/release-gate.sh override"
+            if [ ! -f "$GG_TOP/scripts/release-gate.sh" ]; then
+                # A tree from a base older than the gate: the agent has no way to record a verdict.
+                echo ""
+                echo "   ⚠️ This tree has no scripts/release-gate.sh — it was created from a base"
+                echo "   older than the gate. First merge the fresh $PROTECTED: git merge $bref"
+            fi
+            echo ""
+            exit 1
+        fi
+        if [ -n "$need" ]; then
+            echo "✅ release-gate: $(sed -n 's/^verdict=//p' "$GATE_DIR/$gtree") for tree $(echo "$gtree" | cut -c1-8)"
+        fi
+    fi
+
+    # --- content: deletion of other people's files ---
+    case "$remote_ref" in
+      refs/heads/"$PROTECTED")
+        rref="refs/remotes/$REMOTE_NAME/$PROTECTED"
+        if git rev-parse --verify -q "$rref" >/dev/null 2>&1; then
+            dels=$(git diff --diff-filter=D --name-only "$rref" "$local_sha" -- 2>/dev/null)
+            if [ -n "$dels" ]; then
+                # 🔴 This barrier MUST have a deliberate bypass, like all the others.
+                # Until 10.09.2026 it had none: the advice "rebase" does not help when
+                # the base is fresh and the deletion is intentional, and the only way
+                # out was --no-verify — that is, ALSO dropping the type check and the
+                # authorship check. A bypass that kills every barrier at once trains
+                # people to use it for any reason.
+                # A human sets the mark by name (scripts/git-allow-delete.sh); it lives
+                # 15 minutes and is consumed here after the first use.
+                ALLOWDEL="$COMMON/monitorex-locks/delete-allow"
+                fresh=0
+                if [ -f "$ALLOWDEL" ]; then
+                    dage=$(( $(date +%s) - $({ stat -c %Y "$ALLOWDEL" 2>/dev/null || stat -f %m "$ALLOWDEL"; } 2>/dev/null || echo 0) ))
+                    [ "$dage" -lt 900 ] && fresh=1
+                fi
+                # Check FILE BY FILE: a mark for two paths must not allow deleting
+                # a third one that happened to land in the same commit.
+                unapproved=$(printf '%s\n' "$dels" | while IFS= read -r d; do
+                    [ -n "$d" ] || continue
+                    if [ "$fresh" = "1" ] && grep -qxF -- "$d" "$ALLOWDEL" 2>/dev/null; then
+                        :
+                    else
+                        printf '%s\n' "$d"
+                    fi
+                done)
+
+                if [ -n "$unapproved" ]; then
+                    echo ""
+                    echo "🔴 This push DELETES files from $PROTECTED:"
+                    echo "$dels" | sed 's/^/     /'
+                    if [ "$fresh" = "1" ]; then
+                        echo ""
+                        echo "   A mark exists but does NOT cover:"
+                        printf '%s\n' "$unapproved" | sed 's/^/     /'
+                    fi
+                    echo ""
+                    echo "   A branch from a stale base wipes out other people's work silently —"
+                    echo "   the fast-forward goes through normally. First git fetch and check the diff."
+                    echo ""
+                    echo "   If the deletion is intentional, confirm it by name:"
+                    echo "     scripts/git-allow-delete.sh add <path…>"
+                    echo ""
+                    exit 1
+                fi
+
+                rm -f "$ALLOWDEL"
+                echo "⚪️ Deletion confirmed by a mark; the mark is now consumed:"
+                echo "$dels" | sed 's/^/     /'
+            fi
+        fi ;;
+    esac
+
+    [ "$local_sha" = "$(git rev-parse HEAD)" ] && pushing_head=1
+done <<REFS_EOF
+$REFS
+REFS_EOF
+
+[ "$pushed_any" = "0" ] && exit 0
+
+if [ "$pushing_head" = "0" ]; then
+  echo ""
+  echo "🔴 The commit being pushed is NOT HEAD."
+  echo ""
+  echo "   Types can only be checked for the state that is in the working tree."
+  echo "   Pushing a different commit, the hook would check something other than"
+  echo "   what ships, and its \"ok\" would be a lie."
+  echo ""
+  echo "   Switch to the commit you want, or push with --no-verify,"
+  echo "   knowing that nobody will check the types."
+  echo ""
+  exit 1
+fi
+
+# ─── 2. The working tree must match what is shipping ────────────────────────
+# tsc checks the files on disk, not the commit's content. With a dirty tree a
+# green check says nothing about the code being pushed: an uncommitted change
+# easily "fixes" a type that is broken in the commit itself.
+dirty=$(git status --porcelain -- \
+  '*.ts' '*.tsx' '*.mts' '*.cts' \
+  'tsconfig*.json' 'next.config.*' 'package.json' 2>/dev/null)
+
+if [ -n "$dirty" ]; then
+  echo ""
+  echo "🔴 The working tree has uncommitted code changes:"
+  echo ""
+  echo "$dirty" | sed 's/^/     /'
+  echo ""
+  echo "   The type check looks at files on disk, so its result would apply"
+  echo "   to the tree, not to the commit being pushed."
+  echo ""
+  echo "   Commit the changes or stash them: git stash -u"
+  echo ""
+  exit 1
+fi
+
+# ─── 3. Build artifacts without which the type check is blind ───────────────
+# For Next these are .next/types and .next/dev/types: tsconfig.include pulls them in
+# to check App Router conventions (page/route/layout signatures, params as a
+# Promise, generateMetadata). Their absence is NOT an error for tsc — it silently
+# checks less and still says "ok". That is exactly what must be caught.
+#
+# 🔴 A project without such generation keeps GG_REQUIRE_DEV_READY=0 — then the
+# block is skipped entirely. Do not put a nonexistent path here: push would
+# become impossible, and the cause would look like a broken hook.
+ready=""
+if [ "$GG_REQUIRE_DEV_READY" = "1" ] && [ -n "$GG_DEV_READY_GLOBS" ]; then
+  ready=$(find $GG_DEV_READY_GLOBS -name '*.ts' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$ready" = "0" ]; then
+    echo ""
+    echo "🔴 No generated types ($GG_DEV_READY_GLOBS)."
+    echo ""
+    echo "   Without them the check passes green but does NOT look at page and"
+    echo "   route signatures — exactly the errors that break the runtime."
+    echo ""
+    if [ -n "$GG_DEV_CMD" ]; then
+      echo "   Run at least once:  $GG_DEV_CMD"
+    else
+      echo "   Run the dev server or a build to generate them."
+    fi
+    echo ""
+    exit 1
+  fi
+fi
+
+# ─── 4. The check itself ────────────────────────────────────────────────────
+# 🔴 An empty GG_TYPECHECK_CMD means "this project has no types" — a deliberate
+# decision of whoever installed it, not a breakage. Say so out loud: silence here
+# is indistinguishable from "the check passed".
+if [ -z "$GG_TYPECHECK_CMD" ]; then
+  echo "⚪️ Type check not configured (GG_TYPECHECK_CMD is empty in .gitguards.conf)."
+else
+  if [ -n "$ready" ]; then
+    echo "🔍 Type check ($ready generated type files)…"
+  else
+    echo "🔍 Type check…"
+  fi
+  sh -c "$GG_TYPECHECK_CMD"
+fi
